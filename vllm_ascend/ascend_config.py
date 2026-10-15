@@ -576,6 +576,8 @@ class AscendConfig:
     enable_mc2_hierarchy_comm: bool = False  # deprecated, will be replaced by mc2_comm_alg = "hierarchy"
     enable_dsa_cp: bool = False
     sfa_dcp_force_tmajor_restore: bool = False
+    # Materialize latent and rotary queries together before BF16 DCP decode SFA.
+    enable_sfa_dcp_query_restore: bool = False
     enable_force_eplb: bool = False
     enable_pcp_o_proj_weight_sharding: bool = True
     enable_pcp_embedding_lmhead_weight_sharding: bool = True

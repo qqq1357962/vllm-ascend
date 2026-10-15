@@ -2179,3 +2179,16 @@ class TestEngramSharedMemoryDefaults(TestBase):
         config.engram_config = None
         AscendConfig(sparse_kv_offload_config=SparseKVOffloadConfig()).derive_and_validate(config)
         self.assertIsNone(config.engram_config)
+
+
+class TestSFAQueryRestoreConfig(TestBase):
+    def test_default_and_boolean_coercion(self):
+        self.assertFalse(AscendConfig(sparse_kv_offload_config={}).enable_sfa_dcp_query_restore)
+        self.assertFalse(
+            AscendConfig(sparse_kv_offload_config={}, enable_sfa_dcp_query_restore="false").enable_sfa_dcp_query_restore
+        )
+        self.assertTrue(
+            AscendConfig(sparse_kv_offload_config={}, enable_sfa_dcp_query_restore="true").enable_sfa_dcp_query_restore
+        )
+        with self.assertRaises(ValueError):
+            AscendConfig(sparse_kv_offload_config={}, enable_sfa_dcp_query_restore="invalid")

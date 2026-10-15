@@ -1670,3 +1670,52 @@ def test_dsa_dcp_indexer_attn_q_gather_handle(has_prefill, has_handle):
 def test_other_sfa_layouts_have_no_indexer_attn_q_gather_handle(impl_cls):
     impl = impl_cls.__new__(impl_cls)
     assert impl._get_indexer_attn_q_gather_handle(Mock()) is None
+
+
+@pytest.mark.parametrize(
+    "enabled,has_triton,dtype,expect_restore",
+    [
+        (True, True, torch.bfloat16, True),
+        (False, True, torch.bfloat16, False),
+        (True, False, torch.bfloat16, False),
+        (True, True, torch.int8, False),
+        (True, True, torch.float16, False),
+    ],
+)
+def test_sfa_dcp_query_restore_dispatch(enabled, has_triton, dtype, expect_restore):
+    impl = AscendSFADCPImpl.__new__(AscendSFADCPImpl)
+    impl.enable_sparse_sfa_turboquant = False
+    impl.enable_sfa_dcp_query_restore = enabled
+    impl.dcp_group = Mock()
+    packed = torch.randn(64, 3, 576, dtype=torch.bfloat16)
+    query, rope = packed.transpose(0, 1).split((512, 64), dim=-1)
+    restored = (query.contiguous(), rope.contiguous())
+    indices = torch.zeros(3, 1, 4, dtype=torch.int32)
+    context = SimpleNamespace(gather_context=object(), seq_lens=object(), block_table=object())
+    metadata = SimpleNamespace(dcp_context=context)
+    output = torch.zeros(3, 64, 512, dtype=torch.bfloat16)
+    stats = torch.ones(64, 3, 8)
+    with (
+        patch.object(impl, "_has_prefill", return_value=False),
+        patch.object(impl, "_finish_dcp_gather", return_value=(query, rope)),
+        patch.object(impl, "_remap_sparse_indices", return_value=indices),
+        patch.object(impl, "_merge_dcp_outputs", return_value=output),
+        patch("vllm_ascend.attention.context_parallel.sfa_cp.HAS_TRITON", has_triton),
+        patch("vllm_ascend.attention.context_parallel.sfa_cp.enable_sfa_dcp_force_tmajor_restore", return_value=False),
+        patch("vllm_ascend.ops.triton.sfa_query_restore.materialize_sfa_queries", return_value=restored) as restore,
+        patch(
+            "vllm_ascend.attention.context_parallel.sfa_cp.DeviceOperator.execute_sparse_flash_attention_process",
+            return_value=(output, stats, stats),
+        ) as execute,
+    ):
+        result = impl._execute_sparse_flash_attention_process(
+            query, rope, (torch.empty(0, dtype=dtype),), indices, metadata, None, None
+        )
+    assert result is output
+    assert restore.call_count == int(expect_restore)
+    expected = restored if expect_restore else (query, rope)
+    assert execute.call_args.args[1] is expected[0]
+    assert execute.call_args.args[2] is expected[1]
+    assert execute.call_args.args[4] is indices
+    assert execute.call_args.kwargs["return_lse"] is True
+    assert execute.call_args.kwargs["sparse_mode"] == 0
