@@ -343,6 +343,29 @@ __aicore__ inline void SparseFlashAttentionMla<SFAT>::GetSparseActualSeqLen(uint
     tempLoopInfo.curActualSeqLen = (constInfo.sparseBlockCount * constInfo.sparseBlockSize > threshold) ?
                                            threshold :
                                            constInfo.sparseBlockCount * constInfo.sparseBlockSize;
+    if constexpr (LAYOUT_T == SFA_LAYOUT::TND && KV_LAYOUT_T == SFA_LAYOUT::PA_BSND) {
+        if (constInfo.sparseMode == 0 && constInfo.sparseBlockSize == 1 &&
+            constInfo.mBaseSize == constInfo.gSize && tempLoopInfo.curActualSeqLen > 0) {
+            // With one query per M tile, s1Idx identifies the sparse-index row.
+            // The interface requires valid indices before contiguous -1 padding.
+            const uint32_t queryBase = bIdx == 0 ? 0 : actualSeqLengthsQGm.GetValue(bIdx - 1);
+            const uint64_t rowOffset =
+                ((static_cast<uint64_t>(queryBase) + s1Idx) * kvHeadNum + n2Idx) * constInfo.sparseBlockCount;
+            uint32_t end = tempLoopInfo.curActualSeqLen;
+            if (topKGm.GetValue(rowOffset + end - 1) < 0) {
+                uint32_t begin = 0;
+                while (begin < end) {
+                    const uint32_t middle = begin + (end - begin) / 2;
+                    if (topKGm.GetValue(rowOffset + middle) >= 0) {
+                        begin = middle + 1;
+                    } else {
+                        end = middle;
+                    }
+                }
+                tempLoopInfo.curActualSeqLen = begin;
+            }
+        }
+    }
 }
 
 template <typename SFAT>

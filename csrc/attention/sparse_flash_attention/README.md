@@ -24,6 +24,14 @@
     其中$\tilde{K},\tilde{V}$为基于某种选择算法（如`lightning_indexer`）得到的重要性较高的Key和Value，一般具有稀疏或分块稀疏的特征，$d_k$为$Q,\tilde{K}$每一个头的维度。
     本次公布的`sparse_flash_attention`是面向Sparse Attention的全新算子，针对离散访存进行了指令缩减及搬运聚合的细致优化。
 
+## 稀疏索引的有效前缀
+
+`sparseIndices` 每行的有效索引必须位于连续的 `-1` 后缀之前；有效索引本身不要求按数值排序。
+arch22 在 TND query、PA_BSND KV、`sparseMode=0`、`sparseBlockSize=1` 且每个 M tile 对应一个 query 时，
+根据实际 KV 长度和索引容量确定上限，再在设备上查找有效前缀，减少无效尾部对应的 S2 流水循环。
+每个 query 独立计算前缀长度，图回放会读取当前索引内容，外部 tensor 的容量和布局保持不变。
+其他布局、稀疏模式和 block size 保留原有路径；该处理不对有效值与 `-1` 交错的输入执行压紧或排序。
+
 ## 参数说明
 
   <table style="undefined;table-layout: fixed; width: 1080px"><colgroup>
