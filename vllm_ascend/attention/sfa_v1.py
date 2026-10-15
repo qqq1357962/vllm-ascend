@@ -792,6 +792,20 @@ class AscendSFAImpl(MLAAttentionImpl):
 
         ascend_config = get_ascend_config()
         self.vllm_config = get_current_vllm_config()
+        self.enable_pivot_shared_sfa = ascend_config.enable_pivot_shared_sfa is True
+        self.pivot_shared_sfa = None
+        if self.enable_pivot_shared_sfa:
+            if (
+                not ascend_config.enable_pivot_lightning_indexer
+                or ascend_config.pivot_lightning_indexer_backend != "v1"
+            ):
+                raise ValueError("enable_pivot_shared_sfa requires the Pivot v1 R4 index contract")
+            if ascend_config.enable_sparse_li_c8 or ascend_config.enable_sparse_sfa_c8:
+                raise ValueError("enable_pivot_shared_sfa requires BF16 attention and unquantized indexer KV")
+            if ascend_config.enable_dsa_cp or self.vllm_config.parallel_config.prefill_context_parallel_size != 1:
+                raise ValueError("enable_pivot_shared_sfa currently requires PCP=1 and enable_dsa_cp=false")
+            if self.indexer is not None and self.indexer.n_head != 32:
+                raise ValueError("enable_pivot_shared_sfa requires the 32-head Pivot indexer")
         # SFA absorbs kv_b_proj (and, for KV consumers on PROLOG_V3, the fused
         # qkv/q projections) and disposes the source parameters. A disposed
         # parameter is no longer a valid destination for the in-place weight

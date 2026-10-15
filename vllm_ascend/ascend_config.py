@@ -554,6 +554,8 @@ class AscendConfig:
     enable_sparse_li_c8: bool = False
     enable_pivot_lightning_indexer: bool = False
     pivot_lightning_indexer_backend: Literal["v1", "v2"] = "v1"
+    # Experimental R4 consumer for single-request BF16 prefill. Decode remains native.
+    enable_pivot_shared_sfa: bool = False
     # See https://github.com/vllm-project/vllm-ascend/issues/15896
     c8_enable_reshape_optim: bool = True
     pd_tp_ratio: int = 1
