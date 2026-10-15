@@ -1221,6 +1221,7 @@ class TestTopLevelSwitchTypeValidation(TestBase):
         vc = VllmConfig()
         config = init_ascend_config(vc)
         self.assertFalse(config.enable_pivot_lightning_indexer)
+        self.assertFalse(config.enable_pivot_shared_sfa)
         self.assertEqual(config.pivot_lightning_indexer_backend, "v1")
 
         clear_ascend_config()
@@ -1233,6 +1234,13 @@ class TestTopLevelSwitchTypeValidation(TestBase):
         config = init_ascend_config(vc)
         self.assertTrue(config.enable_pivot_lightning_indexer)
         self.assertEqual(config.pivot_lightning_indexer_backend, "v2")
+
+    @_clean_up
+    @patch("vllm_ascend.platform.NPUPlatform.check_and_update_config")
+    def test_pivot_shared_sfa_opt_in(self, mock_fix):
+        vc = VllmConfig()
+        vc.additional_config = {"enable_pivot_lightning_indexer": True, "enable_pivot_shared_sfa": True}
+        self.assertTrue(init_ascend_config(vc).enable_pivot_shared_sfa)
 
     @_clean_up
     @patch("vllm_ascend.platform.NPUPlatform.check_and_update_config")

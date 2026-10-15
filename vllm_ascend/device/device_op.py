@@ -525,6 +525,23 @@ class BaseDeviceAdaptor:
         if block_table is None:
             block_table = attn_metadata.block_table
         kv = kv_cache[0]
+        if getattr(sfa_impl, "enable_pivot_shared_sfa", False) is True:
+            from vllm_ascend.attention.pivot_shared_sfa import try_shared_prefill
+
+            shared_output = try_shared_prefill(
+                sfa_impl,
+                ql_nope,
+                q_pe,
+                kv_cache,
+                topk_indices,
+                attn_metadata,
+                actual_seq_lengths_query,
+                actual_seq_lengths_key,
+                block_table,
+                return_lse,
+            )
+            if shared_output is not None:
+                return shared_output
 
         # The kv-quant sparse attention op only accepts packed quantized KV.
         # Do not route by the feature flag alone: tests and fallback paths may
