@@ -150,9 +150,9 @@ def make_attention_inputs(requests):
     return q, qr, kv, kr, indices.npu(), bt, lengths, klen
 
 
-def run_attention(args, enabled, dcp=True):
-    # Exercise the real DCP decode entry and device adapter. Only distributed
-    # index remapping/output reduction are bypassed for this single-card test.
+def run_attention(args, enabled, dcp=True, remap_rank=None, interleave=128):
+    # Exercise the real DCP decode entry and device adapter. Output reduction
+    # is bypassed; callers can exercise the existing Triton index remap too.
     from vllm_ascend.attention.context_parallel.sfa_cp import AscendSFADCPImpl, DCPGatherContext
 
     q, qr, kv, kr, indices, bt, qlen, klen = args
@@ -181,7 +181,13 @@ def run_attention(args, enabled, dcp=True):
     impl.scale = 1 / 24
     impl.dcp_group = object()
     impl._has_prefill = lambda _: False
-    impl._remap_sparse_indices = lambda value: value
+    if remap_rank is None:
+        impl._remap_sparse_indices = lambda value: value
+    else:
+        impl.dcp_size = 8
+        impl.dcp_rank = remap_rank
+        impl._dcp_interleave_size = interleave
+        impl._dcp_index_topk = indices.shape[-1]
     impl._merge_dcp_outputs = lambda output, *_: output
     gathered = q.as_strided((64, 8, 576), (8 * 576, 576, 1))
     context = SimpleNamespace(
@@ -235,3 +241,53 @@ def test_complete_sfa_replay(requests, dcp):
         graph.replay()
         torch.npu.synchronize()
         torch.testing.assert_close(result[:active], expected[:active], atol=0, rtol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize("rank,interleave", [(0, 128), (7, 1)])
+def test_query_restore_with_existing_remap(rank, interleave):
+    from vllm_ascend.ops.triton.sparse_index_remap import remap_sparse_indices_triton
+    from vllm_ascend.utils import enable_custom_op
+
+    enable_custom_op()
+    args = make_attention_inputs(requests=2)
+    q, qr, kv, kr, indices, bt, qlen, klen = args
+    # Probe the existing paged LSE boundary before introducing either kernel.
+    try:
+        run_attention(args, False)
+    except RuntimeError as error:
+        if "return_softmax_lse" in str(error) and "PA_BSND" in str(error):
+            pytest.skip("Installed CANN SFA does not support the existing paged DCP LSE path")
+        raise
+    for _ in range(3):
+        run_attention(args, True, remap_rank=rank, interleave=interleave)
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph):
+        result = run_attention(args, True, remap_rank=rank, interleave=interleave)
+    generator = torch.Generator().manual_seed(1234 + rank)
+    for step in range(3):
+        # Mixed owners, interior invalid entries, and an entirely empty row.
+        global_indices = torch.full(indices.shape, -1, dtype=indices.dtype)
+        global_indices[..., :512] = torch.randint(65536, (8, 1, 512), generator=generator, dtype=indices.dtype)
+        global_indices[..., ::13] = -1
+        global_indices[step].fill_(-1)
+        local_indices = torch.full_like(global_indices, -1)
+        for source, target in zip(global_indices.view(8, -1), local_indices.view(8, -1)):
+            owned = source[(source >= 0) & ((source // interleave) % 8 == rank)]
+            target[: owned.numel()] = (owned // (8 * interleave)) * interleave + owned % interleave
+        indices.copy_(global_indices)
+        actual_indices = remap_sparse_indices_triton(indices, 8, rank, interleave)
+        assert torch.equal(actual_indices.cpu(), local_indices)
+        q.mul_(0.9)
+        qr.mul_(0.8)
+        kv.mul_(0.7)
+        kr.mul_(0.6)
+        bt.copy_(bt.flip(-1))
+        qlen.copy_(torch.tensor([3 + step % 2, 8], dtype=torch.int32).npu())
+        # Compare the composed kernels to SFA with independently remapped
+        # indices and its original query materialization path.
+        control_args = (q, qr, kv, kr, local_indices.npu(), bt, qlen, klen)
+        expected = run_attention(control_args, False)
+        graph.replay()
+        torch.npu.synchronize()
+        assert torch.equal(indices.cpu(), global_indices)
+        torch.testing.assert_close(result, expected, atol=0, rtol=0, equal_nan=True)

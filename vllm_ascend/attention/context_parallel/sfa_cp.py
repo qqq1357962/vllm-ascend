@@ -1877,11 +1877,12 @@ class AscendSFADCPImpl(DCPImplMixin, AscendSFAImpl):
         # [T, H, D] storage behind the views;
         # additional-config sfa_dcp_force_tmajor_restore=true keeps the
         # t-major materialization selectable for comparison runs.
+        keep_query_view = not enable_sfa_dcp_force_tmajor_restore()
         ql_nope, q_pe = self._finish_dcp_gather(
             gather_context,
-            keep_view=not enable_sfa_dcp_force_tmajor_restore(),
+            keep_view=keep_query_view,
         )
-        if self.enable_sfa_dcp_query_restore and HAS_TRITON and kv_cache[0].dtype == torch.bfloat16:
+        if self.enable_sfa_dcp_query_restore and keep_query_view and HAS_TRITON and kv_cache[0].dtype == torch.bfloat16:
             # Import only for the opted-in native DCP decode path.
             from vllm_ascend.ops.triton.sfa_query_restore import materialize_sfa_queries
 
