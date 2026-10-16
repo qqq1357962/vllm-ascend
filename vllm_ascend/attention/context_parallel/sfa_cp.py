@@ -16,6 +16,7 @@ from vllm.v1.attention.ops.pcp import _gather_prefill_cache_inputs  # type: igno
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 import vllm_ascend.ops.triton.dcp.dcp_a2a  # noqa: F401
+from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm_ascend.attention.context_parallel.common_cp import (
     DCPImplMixin,
@@ -1366,6 +1367,7 @@ class AscendSFADCPImpl(DCPImplMixin, AscendSFAImpl):
         # internally, so keep DCP on the native path where we pass the DCP
         # slot mapping explicitly.
         self.enable_mlapo = False
+        self.enable_sfa_dcp_query_restore = get_ascend_config().enable_sfa_dcp_query_restore
         self._dcp_interleave_size = self.vllm_config.parallel_config.cp_kv_cache_interleave_size
         if self._dcp_interleave_size <= 0:
             raise RuntimeError(f"Invalid cp_kv_cache_interleave_size: {self._dcp_interleave_size}")
@@ -1877,10 +1879,16 @@ class AscendSFADCPImpl(DCPImplMixin, AscendSFAImpl):
         # [T, H, D] storage behind the views;
         # additional-config sfa_dcp_force_tmajor_restore=true keeps the
         # t-major materialization selectable for comparison runs.
+        keep_query_view = not enable_sfa_dcp_force_tmajor_restore()
         ql_nope, q_pe = self._finish_dcp_gather(
             gather_context,
-            keep_view=not enable_sfa_dcp_force_tmajor_restore(),
+            keep_view=keep_query_view,
         )
+        if self.enable_sfa_dcp_query_restore and keep_query_view and HAS_TRITON and kv_cache[0].dtype == torch.bfloat16:
+            # Import only for the opted-in native DCP decode path.
+            from vllm_ascend.ops.triton.sfa_query_restore import materialize_sfa_queries
+
+            ql_nope, q_pe = materialize_sfa_queries(ql_nope, q_pe)
         sfa_output, softmax_max, softmax_sum = DeviceOperator.execute_sparse_flash_attention_process(
             self,
             ql_nope,
