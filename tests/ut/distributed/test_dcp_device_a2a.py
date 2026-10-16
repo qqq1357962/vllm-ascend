@@ -16,7 +16,9 @@ def _inputs(tokens=8, heads=64, dim=512, dtype=torch.bfloat16, lse_dtype=torch.f
     return output, lse
 
 
-@pytest.mark.parametrize("tokens,expected", [(0, False), (1, True), (32, True), (33, False)])
+@pytest.mark.parametrize(
+    "tokens,expected", [(0, False), (1, True), (32, True), (33, True), (64, True), (128, True), (129, False)]
+)
 def test_token_boundaries(tokens, expected):
     assert device_a2a.supports_device_a2a(*_inputs(tokens), 1, False, False) is expected
 

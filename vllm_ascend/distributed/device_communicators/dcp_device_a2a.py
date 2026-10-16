@@ -12,13 +12,13 @@ import torch
 import torch.distributed as dist
 
 RANKS = 8
-MAX_TOKENS = 32
+MAX_TOKENS = 128
 HEADS = 64
 HEAD_DIM = 512
 LOCAL_HEADS = HEADS // RANKS
-WORKSPACE_BYTES = 10 << 20
-EPOCH_OFFSET = 8 << 20
-ERROR_OFFSET = (8 << 20) + 4096
+WORKSPACE_BYTES = 22 << 20
+EPOCH_OFFSET = 20 << 20
+ERROR_OFFSET = EPOCH_OFFSET + 4096
 WORKERS = 32
 
 
@@ -125,7 +125,7 @@ class DcpDeviceA2A:
         if self.closed:
             raise RuntimeError("DCP device workspace is closed.")
         if not supports_device_a2a(partial_output, softmax_lse, 1, False, False):
-            raise ValueError("DCP device A2A expects BF16 [T,64,512], FP32 [T,64,1], 1 <= T <= 32.")
+            raise ValueError("DCP device A2A expects BF16 [T,64,512], FP32 [T,64,1], 1 <= T <= 128.")
         if partial_output.device != self.device:
             raise ValueError("DCP input device differs from the workspace device.")
         partial_output = partial_output.contiguous()

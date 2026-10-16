@@ -395,7 +395,7 @@ output exchange and LSE-weighted merge after sparse attention. The default
 
 The experimental backend supports one HCCS-connected node with eight Ascend
 910B2 devices, TP8/DCP8/PCP1/DP1/PP1. It accepts BF16 partial outputs
-`[T, 64, 512]` and FP32 LSE `[T, 64, 1]`, with `1 <= T <= 32`, and returns
+`[T, 64, 512]` and FP32 LSE `[T, 64, 1]`, with `1 <= T <= 128`, and returns
 BF16 `[T, 8, 512]`. `T` is the number of token slots, including graph padding
 and speculative tokens, rather than the request batch size. Other shapes,
 PCP gathering, token scattering, returned LSE, and deferred combine use HCCL.
@@ -427,7 +427,7 @@ Enable the backend on every worker:
 
 Worker initialization creates one SHMEM instance before model warmup and graph
 capture. A unique ID is distributed over the DCP CPU group for bootstrap. The
-backend reserves a 32 MiB symmetric heap per rank and allocates a 10 MiB
+backend reserves a 32 MiB symmetric heap per rank and allocates a 22 MiB
 workspace within it. The workspace has two payload slots and device-resident
 unsigned epoch counters; eager execution and graph replay share the same
 counter history. Each invocation pushes raw BF16 outputs and FP32 LSE,

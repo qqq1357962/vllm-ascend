@@ -115,7 +115,9 @@ def main():
     workspace = initialize_device_a2a(group, parallel_config, True)
     _seed_wrap(workspace)
     results = []
-    for tokens in (1, 4, 8, 16, 32):
+    benchmark_tokens = (1, 4, 8, 16, 32, 64, 128)
+    small_graph = small_result = small_parts = small_lse = None
+    for tokens in (1, 4, 8, 16, 32, 33, 64, 65, 127, 128):
         generator = torch.Generator().manual_seed(348 + rank + tokens)
         parts_cpu = torch.randn(tokens, 64, 512, generator=generator).to(torch.bfloat16)
         lse_cpu = torch.randn(tokens, 64, 1, generator=generator) * 4
@@ -134,6 +136,9 @@ def main():
             _assert_wrapped(workspace)
         calls = 32
         graphs = {"hccl": _capture(baseline, calls), "device": _capture(candidate, calls)}
+        if tokens == 1:
+            small_graph, small_result = graphs["device"]
+            small_parts, small_lse = parts, lse
         for label in ("dynamic", "one_empty", "seven_empty", "all_empty", "wide_lse", "nonfinite"):
             parts.copy_(parts_cpu + rank + 1)
             lse.copy_(lse_cpu - rank)
@@ -162,11 +167,18 @@ def main():
         if rank == 3:
             time.sleep(0.02)
         _check(candidate(), reference)
-        if args.benchmark:
+        if args.benchmark and tokens in benchmark_tokens:
             results.append({"tokens": tokens, **_benchmark(graphs, group.cpu_group, calls)})
         if rank == 0:
             print(f"DCP_DEVICE_A2A_SHAPE_OK T={tokens}", flush=True)
         del graphs
+    # Reuse an older small-shape graph after the maximum-size graph has changed
+    # the shared epoch/slot history. Its addresses remain fixed throughout.
+    small_parts.fill_(rank + 1)
+    small_lse.fill_(-rank)
+    reference = _reference(small_parts, small_lse, rank, group.cpu_group)
+    small_graph.replay()
+    _check(small_result, reference)
     workspace.check_status()
     workspace.close()
     group.dcp_device_a2a = None

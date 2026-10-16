@@ -23,9 +23,9 @@ namespace {
 constexpr int64_t kRanks = 8;
 constexpr int64_t kHeads = 64;
 constexpr int64_t kHeadDim = 512;
-constexpr int64_t kMaxTokens = 32;
+constexpr int64_t kMaxTokens = 128;
 constexpr int64_t kHeapBytes = 32LL << 20;
-constexpr int64_t kWorkspaceBytes = 10LL << 20;
+constexpr int64_t kWorkspaceBytes = 22LL << 20;
 
 // The external SDK exports Hybm symbols also exported by MemFabric. Loading it
 // lazily with DEEPBIND preserves its internal bindings when MemFabric was
@@ -160,7 +160,7 @@ at::Tensor dcp_device_a2a(const at::Tensor& input, const at::Tensor& lse, const 
                 "DCP device A2A tensors must be on the same NPU.");
     TORCH_CHECK(input.dim() == 3 && input.size(0) >= 1 && input.size(0) <= kMaxTokens &&
                 input.size(1) == kHeads && input.size(2) == kHeadDim && input.scalar_type() == at::kBFloat16,
-                "DCP device A2A expects BF16 [T,64,512], 1 <= T <= 32.");
+                "DCP device A2A expects BF16 [T,64,512], 1 <= T <= 128.");
     TORCH_CHECK(lse.sizes() == at::IntArrayRef({input.size(0), kHeads, 1}) && lse.scalar_type() == at::kFloat,
                 "DCP device A2A expects FP32 LSE [T,64,1].");
     TORCH_CHECK(peers.dim() == 1 && peers.numel() == kRanks && peers.scalar_type() == at::kLong &&

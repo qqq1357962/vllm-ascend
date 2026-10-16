@@ -5,14 +5,19 @@
 #include <stdint.h>
 
 using namespace AscendC;
-constexpr uint64_t SLOT_BYTES = 4ULL << 20;
-constexpr uint64_t LSE_OFFSET = 2ULL << 20;
-constexpr uint64_t FLAG_OFFSET = 3ULL << 20;
-constexpr uint64_t EPOCH_OFFSET = 8ULL << 20;
-constexpr uint32_t MAX_T = 32;
+constexpr uint64_t SLOT_BYTES = 10ULL << 20;
+constexpr uint64_t LSE_OFFSET = 8ULL << 20;
+constexpr uint64_t FLAG_OFFSET = 9ULL << 20;
+constexpr uint64_t EPOCH_OFFSET = 20ULL << 20;
+constexpr uint32_t MAX_T = 128;
 constexpr uint32_t H = 8;
 constexpr uint32_t D = 512;
 constexpr uint32_t MAX_LANES = 4;
+
+static_assert(8ULL * MAX_T * H * D * sizeof(bfloat16_t) <= LSE_OFFSET);
+static_assert(LSE_OFFSET + 8ULL * MAX_T * H * sizeof(float) <= FLAG_OFFSET);
+static_assert(FLAG_OFFSET + 8ULL * MAX_LANES * 64 <= SLOT_BYTES);
+static_assert(2 * SLOT_BYTES == EPOCH_OFFSET);
 
 template <typename T>
 __aicore__ inline void xcopy(const GlobalTensor<T>& dst, const LocalTensor<T>& src, uint32_t n) {
