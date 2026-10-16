@@ -1,11 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
 
 from vllm_ascend.ops.triton.dcp import dcp_a2a
+
+
+@pytest.mark.parametrize("supported", [True, False])
+@pytest.mark.parametrize("pcp", [None, "pcp"])
+def test_device_backend_dispatch_and_fallback(monkeypatch, supported, pcp):
+    workspace = Mock()
+    group = SimpleNamespace(world_size=8, device_group=object(), dcp_device_a2a=workspace)
+    monkeypatch.setattr(dcp_a2a, "_groups", {"dcp": lambda: group, "pcp": lambda: group})
+    monkeypatch.setattr(dcp_a2a, "supports_device_a2a", Mock(return_value=supported))
+    fallback = Mock()
+    monkeypatch.setattr(dcp_a2a, "dcp_a2a_fused_combine", fallback)
+    output = torch.empty(8, 64, 512, dtype=torch.bfloat16)
+    lse = torch.empty(8, 64, 1)
+    actual = dcp_a2a.dcp_a2a_fused(output, lse, 8, 1, "dcp", pcp)
+    if supported and pcp is None:
+        assert actual is workspace.run.return_value
+        workspace.run.assert_called_once_with(output, lse)
+        fallback.assert_not_called()
+    else:
+        assert actual is fallback.return_value
+        workspace.run.assert_not_called()
 
 
 @pytest.mark.parametrize("scatter_dim", [0, 1])

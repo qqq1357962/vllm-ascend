@@ -428,6 +428,7 @@ class AscendConfig:
             "enable_mc2_hierarchy_comm": false,
             "enable_dsa_cp": false,
             "sfa_dcp_force_tmajor_restore": false,
+            "dcp_device_a2a_library": null,
             "enable_force_eplb": false,
             "enable_pcp_o_proj_weight_sharding": true,
             "enable_pcp_embedding_lmhead_weight_sharding": true,
@@ -576,6 +577,8 @@ class AscendConfig:
     enable_mc2_hierarchy_comm: bool = False  # deprecated, will be replaced by mc2_comm_alg = "hierarchy"
     enable_dsa_cp: bool = False
     sfa_dcp_force_tmajor_restore: bool = False
+    # Explicit opt-in to the standalone 910B2 SHMEM library; None keeps HCCL.
+    dcp_device_a2a_library: str | None = None
     enable_force_eplb: bool = False
     enable_pcp_o_proj_weight_sharding: bool = True
     enable_pcp_embedding_lmhead_weight_sharding: bool = True
