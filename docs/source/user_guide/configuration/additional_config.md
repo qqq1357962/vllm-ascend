@@ -77,6 +77,7 @@ The following table lists additional configuration options available in vLLM Asc
 | `enable_fused_mc2`                  | int  | `0`     | Fused MC2 configuration. `0` disables the fused path, `1` selects dispatch-FFN-combine, and `2` selects CANN MegaMoe when the model and parallel configuration support it. On A5, SiTU models require a CANN MegaMoe wrapper exposing `activation` and `activation_params`; both SiTU parameters are bound from the MoE configuration during initialization. The legacy `VLLM_ASCEND_ENABLE_FUSED_MC2` environment variable is no longer supported. |
 | `enable_transpose_kv_cache_by_block`| bool | `True`  | Whether to enable transpose KV cache by block. The legacy `VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK` environment variable is no longer supported. |
 | `enable_dsa_cp`                     | bool | `False` | Whether to enable DSA-CP for DeepSeek V3.2, DeepSeek V4, and other models with the same architecture. Supported only with Model Runner V1 and requires sequence parallelism. Enabling it automatically enables FlashComm. Setting this option to `true` with Model Runner V2 raises a configuration error; use [PCP](../feature_guide/context_parallel.md#prefill-context-parallel) instead. |
+| `enable_dcp_device_a2a`              | bool | `False` | Enable experimental 910B2 DCP8 SHMEM output exchange. Requires native operators built with the SHMEM SDK. See [DCP device exchange](#experimental-dcp-device-exchange). |
 | `enable_flashcomm1`                 | bool | `False` | Whether to enable SP MoE. See [Sequence Parallelism](../feature_guide/sequence_parallelism.md). |
 | `enable_pcp_o_proj_weight_sharding` | bool | `True` | Whether PCP shards O-projection weights across the PCP group. This option controls SFA-PCP `o_proj` and DSA-PCP two-stage O-projection (`wo_a`/`wo_b`). If the weight method or PCP partition does not support sharding, the option is disabled with a warning. Set it to `false` at server startup to disable sharding. Other attention backends do not use this option. |
 | `enable_pcp_embedding_lmhead_weight_sharding` | bool | `True` | Whether PCP shards embedding and LM Head weights across PCP ranks inside each TP shard. This option is enabled by default, takes effect when PCP size is greater than 1, and is incompatible with batch-sharded sampling (`enable_batch_sharded_sampling`) and fine-grained TP for these modules. |
@@ -385,3 +386,72 @@ non-hybrid MLA, and does not support DCP or KV transfer connectors. PCP gathers
 prefill KV before cache writes; layer broadcasts restore prior-forward cache
 contents before attention. The broadcast decision uses the global scheduled
 batch, not PCP-local segment offsets.
+
+### Experimental DCP device exchange
+
+`enable_dcp_device_a2a` selects an optional SHMEM AscendC backend for the
+output exchange and LSE-weighted merge after sparse attention. The default
+`False` uses the existing HCCL implementation and does not load SHMEM.
+
+The experimental backend supports one HCCS-connected node with eight Ascend
+910B2 devices, TP8/DCP8/PCP1/DP1/PP1. It accepts BF16 partial outputs
+`[T, 64, 512]` and FP32 LSE `[T, 64, 1]`, with `1 <= T <= 128`, and returns
+BF16 `[T, 8, 512]`. `T` is the number of token slots, including graph padding
+and speculative tokens, rather than the request batch size. Other shapes,
+PCP gathering, token scattering, returned LSE, and deferred combine use HCCL.
+Unsupported startup topologies or missing native operators produce an initialization
+error when this option is explicitly selected.
+
+Build vLLM Ascend from source with CANN 9.2 and the
+[Ascend SHMEM SDK](https://gitcode.com/cann/shmem). The validated SDK revision
+is `717df1109b671ed766d13bc108e2fa028e73b8a2`. `VLLM_ASCEND_SHMEM_ROOT` below is its installed
+`shmem` directory, containing `include/`, `src/`, and `lib/`. No SDK source or
+binary is bundled with vLLM Ascend. On Ascend 910B, the normal package build
+detects the SDK at `/usr/local/Ascend/shmem/latest` or the specified prefix and
+includes the DCP operators in `vllm_ascend_C`. Builds without the SDK skip these
+optional operators. An explicitly supplied but incomplete prefix fails the
+build. The same SDK installation must be available on every worker at runtime.
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+source /path/to/shmem/install/set_env.sh
+VLLM_ASCEND_SHMEM_ROOT=/path/to/shmem/install/shmem \
+  pip install -e . --no-build-isolation
+```
+
+Enable the backend on every worker:
+
+```text
+--additional-config '{"enable_dcp_device_a2a":true}'
+```
+
+Worker initialization creates one SHMEM instance before model warmup and graph
+capture. A unique ID is distributed over the DCP CPU group for bootstrap. The
+backend reserves a 32 MiB symmetric heap per rank and allocates a 22 MiB
+workspace within it. The workspace has two payload slots and device-resident
+unsigned epoch counters; eager execution and graph replay share the same
+counter history. Each invocation pushes raw BF16 outputs and FP32 LSE,
+publishes completion flags after MTE completion, waits for all eight sources,
+and merges in FP32 before rounding to BF16. Invalid LSE contributions are
+ignored; a row with no finite LSE produces zeros even if partial outputs
+contain NaNs. A device flag timeout records its worker/source and traps the
+kernel rather than consuming stale payloads.
+
+All ranks must execute identical collective calls in identical order on one
+ordered execution stream. Concurrent streams, multiple simultaneous SHMEM
+users, multiple nodes, and DP replicas are unsupported. Graph capture and
+replay must remain ordered with eager calls. Worker shutdown synchronizes and
+releases the workspace after model execution stops. MemFabric may be loaded
+before SHMEM, but simultaneous MemFabric and SHMEM communication has not been
+validated. This backend remains experimental; long-duration operation and
+full-model quality validation are required before production use.
+
+The explicit eight-rank regression exercises the registered DCP custom op,
+same-address graph input updates, noncontiguous inputs, empty shards, nonfinite
+and wide LSE, a delayed rank, and unsigned epoch wrap. An optional paired graph
+benchmark compares against the HCCL implementation in the same checkout.
+
+```bash
+python -m torch.distributed.run --nproc_per_node=8 \
+  tests/e2e/nightly/single_node/ops/test_dcp_device_a2a.py --benchmark
+```

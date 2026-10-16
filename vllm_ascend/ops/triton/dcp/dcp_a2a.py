@@ -9,6 +9,7 @@ from vllm.triton_utils import tl, triton
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from vllm_ascend.device.device_config import is_950
+from vllm_ascend.distributed.device_communicators.dcp_device_a2a import supports_device_a2a
 from vllm_ascend.ops.triton.dcp.dcp_a2a_batched import (
     _fused_dcp_lse_combine_batched_kernel,
     _pack_dcp_output_lse_batched_kernel,
@@ -549,6 +550,14 @@ def dcp_a2a_fused(
                 f"DCP fused A2A group size does not match dcp_size: group={group.world_size}, dcp_size={dcp_size}."
             )
         scatter_group = group.device_group
+        workspace = getattr(group, "dcp_device_a2a", None)
+        if (
+            dcp_size == 8
+            and pcp_group_name is None
+            and workspace is not None
+            and supports_device_a2a(partial_output, softmax_lse, scatter_dim, return_lse, defer_combine)
+        ):
+            return workspace.run(partial_output, softmax_lse)
 
     pcp_group = None
     if pcp_group_name is not None:

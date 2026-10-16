@@ -79,6 +79,11 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Control the aclrtMemcpyBatchAsync compile path for KV cache offloading.
     # "1": force enable, "0": force disable, None: auto-detect from CANN headers.
     "VLLM_ASCEND_ENABLE_BATCH_MEMCPY": lambda: os.getenv("VLLM_ASCEND_ENABLE_BATCH_MEMCPY", None),
+    # Build-only prefix of the optional Ascend SHMEM SDK. Default: None, which
+    # detects /usr/local/Ascend/shmem/latest. A custom prefix must contain the
+    # installed include, src and lib directories (possibly under shmem/).
+    # This filesystem path is not sensitive; it does not enable the runtime path.
+    "VLLM_ASCEND_SHMEM_ROOT": lambda: os.getenv("VLLM_ASCEND_SHMEM_ROOT", None),
     # Emit per-layer KVPool ranged transfer audit events. Default: 0 (disabled).
     # Valid values: 0 or 1. This configuration is not sensitive.
     "VLLM_ASCEND_KVPOOL_RANGE_DEBUG": lambda: _strict_binary_env("VLLM_ASCEND_KVPOOL_RANGE_DEBUG"),
