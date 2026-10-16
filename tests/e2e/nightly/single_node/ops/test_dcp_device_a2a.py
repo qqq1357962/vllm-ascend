@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Eight-rank hardware regression, run explicitly with torchrun and --library.
+"""Eight-rank hardware regression, run explicitly with torchrun.
 
 See the DCP device exchange configuration guide for the build and run commands.
 The optional benchmark prints paired current-main HCCL / device graph timings.
 """
 
 import argparse
-import ctypes
 import json
 import os
 import statistics
@@ -22,7 +21,7 @@ from vllm.distributed.parallel_state import (
     init_model_parallel_group,
 )
 
-from vllm_ascend.distributed.device_communicators.dcp_device_a2a import initialize_device_a2a
+from vllm_ascend.distributed.device_communicators.dcp_device_a2a import EPOCH_OFFSET, initialize_device_a2a
 from vllm_ascend.ops.triton.dcp import dcp_a2a
 from vllm_ascend.ops.triton.triton_utils import init_device_properties_triton
 
@@ -48,25 +47,14 @@ def _check(actual, reference):
 def _seed_wrap(workspace):
     # Seed all worker counters together before the first invocation. Both flag
     # slots are still zero; four calls exercise fffffffd, fffffffe, ffffffff, 0.
-    counters = (ctypes.c_uint32 * (32 * 16))()
-    for worker in range(32):
-        counters[worker * 16] = 0xFFFFFFFC
-    size = ctypes.sizeof(counters)
-    workspace._check(
-        workspace.acl.aclrtMemcpy(ctypes.c_void_p(workspace.local.value + (8 << 20)), size, counters, size, 1),
-        "seed wrap regression",
-    )
+    workspace.buffer[EPOCH_OFFSET : EPOCH_OFFSET + 32 * 64].view(torch.int32)[::16].fill_(-4)
+    torch.npu.synchronize()
     dist.barrier(group=workspace.control_group)
 
 
 def _assert_wrapped(workspace):
-    counters = (ctypes.c_uint32 * (32 * 16))()
-    size = ctypes.sizeof(counters)
-    workspace._check(
-        workspace.acl.aclrtMemcpy(counters, size, ctypes.c_void_p(workspace.local.value + (8 << 20)), size, 2),
-        "read wrap regression",
-    )
-    assert all(counters[worker * 16] == 0 for worker in range(32))
+    counters = workspace.buffer[EPOCH_OFFSET : EPOCH_OFFSET + 32 * 64].view(torch.int32)[::16].cpu()
+    assert (counters == 0).all()
 
 
 def _capture(call, calls):
@@ -107,7 +95,6 @@ def _benchmark(graphs, group, calls):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--library", required=True)
     parser.add_argument("--benchmark", action="store_true")
     args = parser.parse_args()
     rank = int(os.environ["RANK"])
@@ -125,7 +112,7 @@ def main():
         data_parallel_size=1,
         pipeline_parallel_size=1,
     )
-    workspace = initialize_device_a2a(group, parallel_config, args.library)
+    workspace = initialize_device_a2a(group, parallel_config, True)
     _seed_wrap(workspace)
     results = []
     for tokens in (1, 4, 8, 16, 32):

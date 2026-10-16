@@ -317,6 +317,8 @@ class cmake_build_ext(build_ext):
         # When unset (None), CMake will auto-detect from CANN headers.
         if envs.VLLM_ASCEND_ENABLE_BATCH_MEMCPY is not None:
             cmake_args += [f"-DVLLM_ASCEND_ENABLE_BATCH_MEMCPY={envs.VLLM_ASCEND_ENABLE_BATCH_MEMCPY}"]
+        if envs.VLLM_ASCEND_SHMEM_ROOT is not None:
+            cmake_args += [f"-DVLLM_ASCEND_SHMEM_ROOT={envs.VLLM_ASCEND_SHMEM_ROOT}"]
 
         cmake_args += [ext.cmake_lists_dir]
         logging.info("cmake config command: %s", cmake_args)

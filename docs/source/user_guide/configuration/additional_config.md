@@ -77,7 +77,7 @@ The following table lists additional configuration options available in vLLM Asc
 | `enable_fused_mc2`                  | int  | `0`     | Fused MC2 configuration. `0` disables the fused path, `1` selects dispatch-FFN-combine, and `2` selects CANN MegaMoe when the model and parallel configuration support it. On A5, SiTU models require a CANN MegaMoe wrapper exposing `activation` and `activation_params`; both SiTU parameters are bound from the MoE configuration during initialization. The legacy `VLLM_ASCEND_ENABLE_FUSED_MC2` environment variable is no longer supported. |
 | `enable_transpose_kv_cache_by_block`| bool | `True`  | Whether to enable transpose KV cache by block. The legacy `VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK` environment variable is no longer supported. |
 | `enable_dsa_cp`                     | bool | `False` | Whether to enable DSA-CP for DeepSeek V3.2, DeepSeek V4, and other models with the same architecture. Supported only with Model Runner V1 and requires sequence parallelism. Enabling it automatically enables FlashComm. Setting this option to `true` with Model Runner V2 raises a configuration error; use [PCP](../feature_guide/context_parallel.md#prefill-context-parallel) instead. |
-| `dcp_device_a2a_library`             | str | `None` | Experimental 910B2 DCP8 SHMEM output exchange library path. `None` keeps HCCL. See [DCP device exchange](#experimental-dcp-device-exchange). |
+| `enable_dcp_device_a2a`              | bool | `False` | Enable experimental 910B2 DCP8 SHMEM output exchange. Requires native operators built with the SHMEM SDK. See [DCP device exchange](#experimental-dcp-device-exchange). |
 | `enable_flashcomm1`                 | bool | `False` | Whether to enable SP MoE. See [Sequence Parallelism](../feature_guide/sequence_parallelism.md). |
 | `enable_pcp_o_proj_weight_sharding` | bool | `True` | Whether PCP shards O-projection weights across the PCP group. This option controls SFA-PCP `o_proj` and DSA-PCP two-stage O-projection (`wo_a`/`wo_b`). If the weight method or PCP partition does not support sharding, the option is disabled with a warning. Set it to `false` at server startup to disable sharding. Other attention backends do not use this option. |
 | `enable_pcp_embedding_lmhead_weight_sharding` | bool | `True` | Whether PCP shards embedding and LM Head weights across PCP ranks inside each TP shard. This option is enabled by default, takes effect when PCP size is greater than 1, and is incompatible with batch-sharded sampling (`enable_batch_sharded_sampling`) and fine-grained TP for these modules. |
@@ -389,9 +389,9 @@ batch, not PCP-local segment offsets.
 
 ### Experimental DCP device exchange
 
-`dcp_device_a2a_library` selects an optional SHMEM AscendC backend for the
+`enable_dcp_device_a2a` selects an optional SHMEM AscendC backend for the
 output exchange and LSE-weighted merge after sparse attention. The default
-`None` uses the existing HCCL implementation and does not load SHMEM.
+`False` uses the existing HCCL implementation and does not load SHMEM.
 
 The experimental backend supports one HCCS-connected node with eight Ascend
 910B2 devices, TP8/DCP8/PCP1/DP1/PP1. It accepts BF16 partial outputs
@@ -399,28 +399,30 @@ The experimental backend supports one HCCS-connected node with eight Ascend
 BF16 `[T, 8, 512]`. `T` is the number of token slots, including graph padding
 and speculative tokens, rather than the request batch size. Other shapes,
 PCP gathering, token scattering, returned LSE, and deferred combine use HCCL.
-Unsupported startup topologies or missing libraries produce an initialization
+Unsupported startup topologies or missing native operators produce an initialization
 error when this option is explicitly selected.
 
-Build the optional library separately with CANN 9.1 or 9.2 and the
+Build vLLM Ascend from source with CANN 9.2 and the
 [Ascend SHMEM SDK](https://gitcode.com/cann/shmem). The validated SDK revision
-is `717df1109b671ed766d13bc108e2fa028e73b8a2`. `SHMEM_ROOT` below is its installed
+is `717df1109b671ed766d13bc108e2fa028e73b8a2`. `VLLM_ASCEND_SHMEM_ROOT` below is its installed
 `shmem` directory, containing `include/`, `src/`, and `lib/`. No SDK source or
-binary is bundled with vLLM Ascend.
+binary is bundled with vLLM Ascend. On Ascend 910B, the normal package build
+detects the SDK at `/usr/local/Ascend/shmem/latest` or the specified prefix and
+includes the DCP operators in `vllm_ascend_C`. Builds without the SDK skip these
+optional operators. An explicitly supplied but incomplete prefix fails the
+build. The same SDK installation must be available on every worker at runtime.
 
 ```bash
 source /usr/local/Ascend/cann/set_env.sh
 source /path/to/shmem/install/set_env.sh
-cmake -S csrc/dcp_device_a2a -B /tmp/dcp-device-build \
-  -DASC_DIR="$ASCEND_HOME_PATH/compiler/tikcpp/ascendc_kernel_cmake" \
-  -DSHMEM_ROOT=/path/to/shmem/install/shmem -DCMAKE_BUILD_TYPE=Release
-cmake --build /tmp/dcp-device-build -j4
+VLLM_ASCEND_SHMEM_ROOT=/path/to/shmem/install/shmem \
+  pip install -e . --no-build-isolation
 ```
 
-Pass the absolute library path on every worker, for example:
+Enable the backend on every worker:
 
 ```text
---additional-config '{"dcp_device_a2a_library":"/tmp/dcp-device-build/libdcp_device_a2a.so"}'
+--additional-config '{"enable_dcp_device_a2a":true}'
 ```
 
 Worker initialization creates one SHMEM instance before model warmup and graph
@@ -451,6 +453,5 @@ benchmark compares against the HCCL implementation in the same checkout.
 
 ```bash
 python -m torch.distributed.run --nproc_per_node=8 \
-  tests/e2e/nightly/single_node/ops/test_dcp_device_a2a.py \
-  --library /tmp/dcp-device-build/libdcp_device_a2a.so --benchmark
+  tests/e2e/nightly/single_node/ops/test_dcp_device_a2a.py --benchmark
 ```

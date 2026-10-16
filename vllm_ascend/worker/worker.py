@@ -1327,7 +1327,7 @@ class NPUWorker(WorkerBase):
             )
         init_ascend_model_parallel(self.parallel_config, self.vllm_config.engram_config)
         self._dcp_device_a2a = initialize_device_a2a(
-            get_dcp_group(), self.parallel_config, get_ascend_config().dcp_device_a2a_library
+            get_dcp_group(), self.parallel_config, get_ascend_config().enable_dcp_device_a2a
         )
         ensure_ec_transfer_initialized(self.vllm_config)
 
