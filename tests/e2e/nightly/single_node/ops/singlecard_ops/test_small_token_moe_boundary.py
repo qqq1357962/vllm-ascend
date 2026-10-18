@@ -3,6 +3,7 @@ import pytest
 import torch
 
 from vllm_ascend.ops.fused_moe.small_token_boundary import (
+    _small_token_shared_add,
     add_shared_expert_output,
     mask_local_expert_weights,
 )
@@ -62,14 +63,20 @@ def test_mask_special_values_and_graph_updates(dtype):
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("tokens", [1, 4, 8, 32, 33])
-def test_shared_add_graph_replay_after_producer_stream(dtype, tokens):
+@pytest.mark.parametrize("compiled_boundary", [False, True])
+def test_shared_add_graph_replay_after_producer_stream(dtype, tokens, compiled_boundary):
+    def combine(shared, routed):
+        if compiled_boundary:
+            return _small_token_shared_add(shared, routed)
+        return add_shared_expert_output(shared, routed, enabled=True)
+
     shared = torch.randn(6144, tokens, device="npu", dtype=dtype).T
     routed = torch.randn_like(shared)
     for _ in range(3):
-        add_shared_expert_output(shared, routed, enabled=True)
+        combine(shared, routed)
     graph = torch.npu.NPUGraph()
     with torch.npu.graph(graph):
-        output = add_shared_expert_output(shared, routed, enabled=True)
+        output = combine(shared, routed)
     producer = torch.npu.Stream()
     for _ in range(3):
         with torch.npu.stream(producer):

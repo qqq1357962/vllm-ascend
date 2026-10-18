@@ -37,8 +37,7 @@ def mask_local_expert_weights(weights, expert_ids, expert_map, *, enabled=False)
     return fused_expert_map_weights(weights, expert_ids, expert_map)
 
 
-@torch.library.custom_op("vllm_ascend::small_token_shared_add", mutates_args=())
-def _small_token_shared_add(shared_output: torch.Tensor, routed_output: torch.Tensor) -> torch.Tensor:
+def _add_shared_expert_output_impl(shared_output: torch.Tensor, routed_output: torch.Tensor) -> torch.Tensor:
     # Select using concrete runtime capacities inside an opaque op. A Python
     # token-size branch in MoERunner.forward would constrain torch.compile's
     # dynamic prefill/decode range to <=32 or >32 during tracing.
@@ -53,6 +52,11 @@ def _small_token_shared_add(shared_output: torch.Tensor, routed_output: torch.Te
     return torch._foreach_add([shared_output], [routed_output])[0]
 
 
+@torch.library.custom_op("vllm_ascend::small_token_shared_add", mutates_args=())
+def _small_token_shared_add(shared_output: torch.Tensor, routed_output: torch.Tensor) -> torch.Tensor:
+    return _add_shared_expert_output_impl(shared_output, routed_output)
+
+
 @_small_token_shared_add.register_fake
 def _small_token_shared_add_fake(shared_output, routed_output):
     return torch._foreach_add([shared_output], [routed_output])[0]
@@ -61,5 +65,9 @@ def _small_token_shared_add_fake(shared_output, routed_output):
 def add_shared_expert_output(shared_output, routed_output, *, enabled=False):
     """Join outputs after their existing stream waits, without input mutation."""
     if enabled:
-        return _small_token_shared_add(shared_output, routed_output)
+        if torch.compiler.is_compiling():
+            return _small_token_shared_add(shared_output, routed_output)
+        # Eager GLM draft execution needs no opaque dispatch. Avoid its Python
+        # overhead while retaining the same runtime capacity/dtype decision.
+        return _add_shared_expert_output_impl(shared_output, routed_output)
     return torch._foreach_add([shared_output], [routed_output])[0]
