@@ -49,6 +49,7 @@ from vllm_ascend.ops.fused_moe.dataclass.token_dispatcher import (
     TMoECombineMetadata,
 )
 from vllm_ascend.ops.fused_moe.moe_utils import async_all_to_all, gather_from_sequence_parallel_region
+from vllm_ascend.ops.fused_moe.small_token_boundary import mask_local_expert_weights
 from vllm_ascend.quantization.quant_type import QuantType
 from vllm_ascend.utils import should_skip_allreduce_across_dp_group
 
@@ -391,8 +392,12 @@ class TokenDispatcherWithAllGather(MoETokenDispatcher[MoEAllGatherCombineMetadat
             hidden_states = hidden_states * topk_weights.to(hidden_states.dtype)
         if expert_map is not None:
             global_num_experts = len(expert_map) + global_redundant_expert_num
-            mask = expert_map[topk_ids] != -1
-            topk_weights = topk_weights * mask
+            topk_weights = mask_local_expert_weights(
+                topk_weights,
+                topk_ids,
+                expert_map,
+                enabled=get_ascend_config().enable_moe_expert_map_fusion,
+            )
             first_expert_idx = get_ep_group().rank_in_group * self.num_experts_local
             last_expert_idx = first_expert_idx + self.num_experts_local
         else:

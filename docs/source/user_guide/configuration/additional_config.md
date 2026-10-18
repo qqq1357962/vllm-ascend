@@ -355,3 +355,25 @@ non-hybrid MLA, and does not support DCP or KV transfer connectors. PCP gathers
 prefill KV before cache writes; layer broadcasts restore prior-forward cache
 contents before attention. The broadcast decision uses the global scheduled
 batch, not PCP-local segment offsets.
+
+### Small-token MoE execution
+
+`enable_moe_expert_map_fusion` and `enable_moe_shared_output_add` are experimental
+boolean switches, both disabled by default. They target capacities of at most
+32 tokens; larger capacities retain the existing implementation.
+
+- `enable_moe_expert_map_fusion` fuses the AllGather dispatcher's expert-map
+  lookup, ownership comparison and router-weight multiplication. It supports
+  FP32/FP16/BF16 weights, int32/int64 IDs and maps, and strided layouts on NPU.
+  IDs must satisfy the router/dispatch contract `-E <= id < E`, where `E` is the
+  expert-map length. Valid negative IDs are supported. Invalid-ID error
+  equivalence is not guaranteed when this switch is enabled. Other dispatch
+  methods are unchanged.
+- `enable_moe_shared_output_add` uses ordinary out-of-place add for matching
+  two-dimensional FP32/FP16/BF16 shared and routed outputs after the existing
+  synchronization, scaling and reduction hooks. It does not modify its inputs.
+
+These switches do not change expert selection, ownership, quantization or
+communication. They may be enabled independently for ablation. Performance
+validation is required for the target device and runtime; single-card boundary
+measurements do not establish an end-to-end speedup.
