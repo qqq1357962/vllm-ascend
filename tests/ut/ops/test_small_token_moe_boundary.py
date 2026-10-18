@@ -50,3 +50,15 @@ def test_config_switches_default_off():
     )
     assert enabled.enable_moe_expert_map_fusion is True
     assert enabled.enable_moe_shared_output_add is True
+
+
+def test_add_keeps_dynamic_token_range_across_compile():
+    def combine(shared, routed):
+        return add_shared_expert_output(shared, routed, enabled=True)
+
+    compiled = torch.compile(combine, backend="eager", fullgraph=True, dynamic=True)
+    for tokens in (8, 64, 4):
+        shared, routed = torch.randn(tokens, 16), torch.randn(tokens, 16)
+        torch._dynamo.mark_dynamic(shared, 0, min=1, max=8192)
+        torch._dynamo.mark_dynamic(routed, 0, min=1, max=8192)
+        assert_exact(compiled(shared, routed), torch._foreach_add([shared], [routed])[0])
