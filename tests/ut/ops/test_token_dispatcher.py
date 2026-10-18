@@ -1054,3 +1054,32 @@ class TestTokenDispatcherWithAll2AllV(TestBase):
         self.assertIsNotNone(result.group_list)
         self.assertIsNotNone(result.dynamic_scale)
         self.assertEqual(result.group_list_type, 1)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_allgather_mask_preserves_routing_metadata(monkeypatch, enabled):
+    from vllm_ascend.ops.fused_moe import token_dispatcher as module
+
+    monkeypatch.setattr(module, "get_ascend_config", lambda: SimpleNamespace(enable_moe_expert_map_fusion=enabled))
+    monkeypatch.setattr(module, "get_ep_group", lambda: SimpleNamespace(rank_in_group=1))
+    dispatcher = TokenDispatcherWithAllGather(top_k=2, num_local_experts=2)
+    hidden = torch.randn(2, 8)
+    weights = torch.tensor([[0.25, 0.75], [0.6, 0.4]])
+    ids = torch.tensor([[0, 2], [3, 1]], dtype=torch.int32)
+    mapping = torch.tensor([-1, -1, 0, 1], dtype=torch.int32)
+    dispatch_input = build_token_dispatch_input_fixture(
+        hidden_states=hidden,
+        topk_weights=weights,
+        topk_ids=ids,
+        expert_map=mapping,
+    )
+    routing = MagicMock(return_value=(hidden, torch.arange(4), torch.tensor([1, 1]), None))
+    monkeypatch.setattr(module.DeviceOperator, "npu_moe_init_routing", routing)
+    output = dispatcher.token_dispatch(dispatch_input)
+    assert routing.call_args.args[0] is hidden
+    assert routing.call_args.args[1] is ids
+    assert routing.call_args.kwargs["active_expert_range"] == [2, 4]
+    assert routing.call_args.kwargs["quant_mode"] == -1
+    assert torch.equal(output.combine_metadata.topk_weights, weights * (mapping[ids] != -1))
+    assert dispatch_input.topk_weights is weights
+    assert torch.equal(output.group_list, torch.tensor([1, 1], dtype=torch.int64))

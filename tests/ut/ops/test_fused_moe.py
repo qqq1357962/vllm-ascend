@@ -2596,13 +2596,19 @@ def test_forward_impl_shared_experts_uses_gate_weight_fp32(monkeypatch):
 
 @pytest.mark.parametrize("initial_comm", [MoECommType.ALLGATHER, MoECommType.MC2])
 @pytest.mark.parametrize("layout", ["tp", "no_shared", "shared_dp", "sp", "latent"])
+@pytest.mark.parametrize("plain_add", [False, True])
 def test_maybe_all_reduce_graph_replay_preserves_shared_and_routed_outputs(
     monkeypatch,
     runtime_moe_all_reduce,
     initial_comm,
     layout,
+    plain_add,
 ):
     from torch.fx.experimental.proxy_tensor import make_fx
+
+    monkeypatch.setattr(
+        fused_moe_module, "get_ascend_config", lambda: SimpleNamespace(enable_moe_shared_output_add=plain_add)
+    )
 
     context = runtime_moe_all_reduce
     tp_size = 8
