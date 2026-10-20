@@ -791,6 +791,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         self.layerwise_kv_cache_hook: Any = None
 
         ascend_config = get_ascend_config()
+        self.sfa_tnd_physical_indices = ascend_config.sfa_tnd_physical_indices
         self.vllm_config = get_current_vllm_config()
         # SFA absorbs kv_b_proj (and, for KV consumers on PROLOG_V3, the fused
         # qkv/q projections) and disposes the source parameters. A disposed

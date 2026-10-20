@@ -349,6 +349,7 @@ class AscendConfig:
             "enable_reduce_sample": false,
             "enable_dsa_cp": false,
             "sfa_dcp_force_tmajor_restore": false,
+            "sfa_tnd_physical_indices": false,
             "enable_force_eplb": false,
             "enable_pcp_o_proj_weight_sharding": false,
             "enable_pcp_embedding_lmhead_weight_sharding": true,
@@ -492,6 +493,8 @@ class AscendConfig:
     enable_reduce_sample: bool = False
     enable_dsa_cp: bool = False
     sfa_dcp_force_tmajor_restore: bool = False
+    # Experimental A5 BF16 single-request prefill: map paged indices before TND SFA.
+    sfa_tnd_physical_indices: bool = False
     enable_force_eplb: bool = False
     enable_pcp_o_proj_weight_sharding: bool = False
     enable_pcp_embedding_lmhead_weight_sharding: bool = True

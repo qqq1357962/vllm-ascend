@@ -550,6 +550,35 @@ class BaseDeviceAdaptor:
             )
         else:
             key_rope = kv_cache[1]
+            if (
+                getattr(sfa_impl, "sfa_tnd_physical_indices", False) is True
+                and get_current_hardware_profile().device_adaptor_family == DeviceAdaptorFamily.FP8_OPTIMIZED
+                and attn_metadata.num_prefills == 1
+                and getattr(attn_metadata, "num_decodes", 0) == 0
+                and not return_lse
+                # The indexer guarantees full, causally valid TopK rows only
+                # after the request has at least TopK preceding context tokens.
+                # Keep short/dense-prefix chunks on the original PA path.
+                and getattr(attn_metadata, "max_seq_len", 0) - getattr(attn_metadata, "max_query_len", 0)
+                >= topk_indices.shape[-1]
+            ):
+                from vllm_ascend.ops.triton.sfa_tnd import try_physical_tnd_sfa
+
+                tnd_result = try_physical_tnd_sfa(
+                    torch.ops._C_ascend.npu_sparse_flash_attention,
+                    ql_nope,
+                    q_pe,
+                    kv,
+                    key_rope,
+                    topk_indices,
+                    block_table,
+                    actual_seq_lengths_query,
+                    actual_seq_lengths_key,
+                    sfa_impl.scale,
+                    sparse_mode=sparse_mode,
+                )
+                if tnd_result is not None:
+                    return tnd_result[0]
             result = torch.ops._C_ascend.npu_sparse_flash_attention(
                 query=ql_nope,
                 key=kv,
