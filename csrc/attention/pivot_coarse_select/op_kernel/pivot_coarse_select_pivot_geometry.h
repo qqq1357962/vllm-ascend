@@ -77,6 +77,7 @@ struct GroupedWorkspace {
     uint64_t picks;
     uint64_t queryEnds;
     uint64_t history;
+    uint64_t sharedPairs;
     uint64_t scan;
 
     LI_PIVOT_INLINE GroupedWorkspace(uint64_t rows, uint64_t heads, uint32_t topk, bool raw)
@@ -84,7 +85,8 @@ struct GroupedWorkspace {
           picks(weights + (raw ? PivotAlign(rows * heads * sizeof(float)) : 0)),
           queryEnds(picks + PivotAlign(rows * topk * sizeof(int32_t))),
           history(queryEnds + PivotAlign(rows * sizeof(uint32_t))),
-          scan(history + PivotAlign(rows * sizeof(uint32_t)))
+          sharedPairs(history + PivotAlign(rows * sizeof(uint32_t))),
+          scan(sharedPairs + PivotAlign(((rows + 1) / 2) * sizeof(uint32_t)))
     {}
 };
 } // namespace PivotCoarseSelectCommon

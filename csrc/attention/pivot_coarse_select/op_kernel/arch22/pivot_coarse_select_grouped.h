@@ -91,6 +91,49 @@ __aicore__ inline bool WindowKeyAlreadySelected(const LocalTensor<int32_t> &ids,
     return mismatches != width;
 }
 
+// A Cube key load can serve two proxies only when every shared logical page maps to the same physical page.
+constexpr uint32_t PAGE_COMPARE_TILE = 256;
+__aicore__ inline bool CanShareKeyPages(const GlobalTensor<int32_t> &table, uint64_t first, uint64_t second,
+    uint32_t pages, const LocalTensor<int32_t> &left, const LocalTensor<int32_t> &right,
+    const LocalTensor<int32_t> &difference)
+{
+    if (pages == 0 || table.GetValue(first) != table.GetValue(second) ||
+        table.GetValue(first + pages - 1) != table.GetValue(second + pages - 1)) {
+        return false;
+    }
+    constexpr uint32_t block = PivotCoarseSelectVec::BLOCK_BYTES / sizeof(int32_t);
+    for (uint32_t offset = 0; offset < pages; offset += PAGE_COMPARE_TILE) {
+        const uint32_t count = Min(pages - offset, PAGE_COMPARE_TILE);
+        const DataCopyExtParams copy{1, count * static_cast<uint32_t>(sizeof(int32_t)), 0, 0, 0};
+        const DataCopyPadExtParams<int32_t> pad{false, 0, 0, 0};
+        DataCopyPad(left, table[first + offset], copy, pad);
+        DataCopyPad(right, table[second + offset], copy, pad);
+        SetWaitFlag<HardEvent::MTE2_V>(HardEvent::MTE2_V);
+        Duplicate(difference, 0, PAGE_COMPARE_TILE);
+        PipeBarrier<PIPE_V>();
+        Sub(difference, left, right, count);
+        PipeBarrier<PIPE_V>();
+        Mins(difference, difference, 1, PAGE_COMPARE_TILE);
+        PipeBarrier<PIPE_V>();
+        Maxs(difference, difference, -1, PAGE_COMPARE_TILE);
+        PipeBarrier<PIPE_V>();
+        Mul(difference, difference, difference, PAGE_COMPARE_TILE);
+        PipeBarrier<PIPE_V>();
+        for (uint32_t half = PAGE_COMPARE_TILE / 2; half >= block; half /= 2) {
+            Add(difference, difference, difference[half], half);
+            PipeBarrier<PIPE_V>();
+        }
+        SetWaitFlag<HardEvent::V_S>(HardEvent::V_S);
+        SetWaitFlag<HardEvent::V_MTE2>(HardEvent::V_MTE2);
+        for (uint32_t lane = 0; lane < block; ++lane) {
+            if (difference.GetValue(lane) != 0) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 template <typename LIT>
 __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *key, __gm__ uint8_t *weights,
     __gm__ uint8_t *queryEnds, __gm__ uint8_t *keyLengths, __gm__ uint8_t *blockTable,
@@ -110,11 +153,18 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
     lengths.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(keyLengths));
 
     if ASCEND_IS_AIV {
-        GlobalTensor<int32_t> proxyEnds, proxyLengths;
+        GlobalTensor<int32_t> proxyEnds, proxyLengths, pages;
+        GlobalTensor<uint32_t> sharedPairs;
         proxyEnds.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace + layout.queryEnds));
         proxyLengths.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace + layout.history));
+        sharedPairs.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(workspace + layout.sharedPairs));
 
-        TBuf<TPosition::VECCALC> rawBuf, sumBuf, convertedBuf, metaBuf;
+        TBuf<TPosition::VECCALC> rawBuf, sumBuf, convertedBuf, metaBuf, pageCompareBuf;
+        const bool checkPairs = topk == COARSE_TOPK && rows >= 2 * tiling.usedCoreNum;
+        if (checkPairs) {
+            pages.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(blockTable));
+            pipe.InitBuffer(pageCompareBuf, 3 * PAGE_COMPARE_TILE * sizeof(int32_t));
+        }
         pipe.InitBuffer(metaBuf, PivotCoarseSelectVec::BLOCK_BYTES);
         auto meta = metaBuf.Get<int32_t>();
         GlobalTensor<Q> rawQ, proxyQ;
@@ -135,6 +185,22 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
                     sumBuf.Get<float>(), convertedBuf.Get<float>());
                 MeanCoarseRows(rawW, proxyW, heads, group, row, rawBuf.Get<W>(),
                     sumBuf.Get<float>(), convertedBuf.Get<float>());
+            }
+            if (checkPairs && row % 2 == 0) {
+                const auto tableStride = tiling.maxBlockNumPerBatch;
+                uint32_t pagesInCommon = 0;
+                if (row + 1 < rows) {
+                    const auto next = GetCoarseWindow(ends, lengths, row + 1, tiling);
+                    pagesInCommon = CeilDiv(Min(group.upper, next.upper), tiling.blockSize);
+                }
+                auto pageUb = pageCompareBuf.Get<int32_t>();
+                const bool shared = CanShareKeyPages(pages, static_cast<uint64_t>(row) * tableStride,
+                    static_cast<uint64_t>(row + 1) * tableStride, pagesInCommon, pageUb, pageUb[PAGE_COMPARE_TILE],
+                    pageUb[2 * PAGE_COMPARE_TILE]);
+                meta.SetValue(0, shared);
+                SetWaitFlag<HardEvent::S_MTE3>(HardEvent::S_MTE3);
+                DataCopyPad(sharedPairs[row / 2], meta.ReinterpretCast<uint32_t>(), {1, sizeof(uint32_t), 0, 0});
+                SetWaitFlag<HardEvent::MTE3_S>(HardEvent::MTE3_S);
             }
             meta.SetValue(0, row + 1);
             SetWaitFlag<HardEvent::S_MTE3>(HardEvent::S_MTE3);
@@ -160,7 +226,8 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
     PivotCoarseSelectKernel<LIT> backend;
     backend.Init(raw ? workspace : query, key, raw ? workspace + layout.weights : weights,
         workspace + layout.queryEnds, workspace + layout.history, blockTable, workspace + layout.picks,
-        values, workspace + layout.scan, &scan, &pipe);
+        values, workspace + layout.scan, &scan, &pipe, nullptr,
+        reinterpret_cast<__gm__ const uint32_t *>(workspace + layout.sharedPairs));
     backend.Process();
 
     if ASCEND_IS_AIV {
