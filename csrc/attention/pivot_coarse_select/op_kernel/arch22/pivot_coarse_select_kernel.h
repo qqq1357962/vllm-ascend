@@ -125,6 +125,7 @@ protected:
     uint32_t tmpBlockIdx = 0U;
     uint32_t aiCoreIdx = 0U;
     uint32_t usedCoreNum = 0U;
+    bool pairCoarseRows = false;
 
     PivotCoarseSelectCommon::ConstInfo constInfo{};
     TempLoopInfo tempLoopInfo{};
@@ -141,6 +142,9 @@ protected:
     __aicore__ inline uint32_t GetTotalBaseBlockNum();
     // ================================Process functions================================
     __aicore__ inline void ProcessMain();
+    __aicore__ inline void ProcessCoarsePairs();
+    __aicore__ inline void SetPairRunInfo(PivotCoarseSelectCommon::RunInfo &info, uint32_t row,
+        uint32_t s2, uint32_t length, uint32_t lane, uint32_t loop);
     __aicore__ inline void ProcessBaseBlock(uint32_t loop, uint64_t s2LoopIdx, PivotCoarseSelectCommon::RunInfo &runInfo);
     __aicore__ inline void ProcessDecode();
     __aicore__ inline void ProcessInvalid();
@@ -427,8 +431,14 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
     constInfo.pivotGroups = pivotGroups;
     InitActualSeqLen(actualSeqLengthsQ, actualSeqLengths);
 
-    // 计算分核
-    SplitCore(aiCoreIdx, usedCoreNum, splitCoreInfo);
+    // Keep enough independent row pairs to occupy the device before selecting this schedule.
+    pairCoarseRows = constInfo.batchWideMerge && tiling->groupSize != 0 && !tiling->modifyLocalwindow &&
+        constInfo.batchSize >= 2 * usedCoreNum;
+    if (pairCoarseRows) {
+        constInfo.mBaseSizeAlign = 2 * Align(constInfo.gSize, BLOCK_CUBE_SIZE);
+    } else {
+        SplitCore(aiCoreIdx, usedCoreNum, splitCoreInfo);
+    }
 
     pipe = tPipe;
     // workspace 内存排布
@@ -588,6 +598,10 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Process()
         ProcessInvalid();
         return;
     }
+    if (pairCoarseRows) {
+        ProcessCoarsePairs();
+        return;
+    }
     ProcessMain();
     ProcessDecode();
 }
@@ -626,6 +640,95 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessInvalid()
                 AscendC::InitGlobalMemory(valueOut, dealSize, negInf);
             }
         }
+    }
+}
+
+template <typename LIT>
+__aicore__ inline void PivotCoarseSelectKernel<LIT>::SetPairRunInfo(PivotCoarseSelectCommon::RunInfo &info,
+    uint32_t row, uint32_t s2, uint32_t length, uint32_t lane, uint32_t loop)
+{
+    info.loop = loop;
+    info.bN2Idx = row;
+    info.bIdx = row;
+    info.gS1Idx = 0;
+    info.s2Idx = s2;
+    info.actS1Size = 1;
+    info.actS2Size = length;
+    info.actMBaseSize = constInfo.gSize;
+    info.actualSingleProcessSInnerSize = Min(length - s2 * constInfo.s2BaseSize, constInfo.s2BaseSize);
+    info.actualSingleProcessSInnerSizeAlign = Align(info.actualSingleProcessSInnerSize, PivotCoarseSelectCommon::ConstInfo::BUFFER_SIZE_BYTE_32B);
+    info.tensorQueryOffset = static_cast<uint64_t>(row) * constInfo.gSize * constInfo.headDim;
+    info.tensorWeightsOffset = static_cast<uint64_t>(row) * constInfo.gSize;
+    info.tensorKeyOffset = 0; // The paged key loader addresses the table row by bIdx.
+    info.indiceOutOffset = static_cast<uint64_t>(row) * constInfo.sparseCount;
+    info.isFirstS2InnerLoop = s2 == 0;
+    info.isLastS2InnerLoop = (s2 + 1) * constInfo.s2BaseSize >= length;
+    info.isAllLoopEnd = false;
+    info.pairedRows = true;
+    info.vectorLane = lane;
+    info.scoreOffset = lane * (constInfo.mBaseSizeAlign / 2) * constInfo.s2BaseSize;
+}
+
+template <typename LIT>
+__aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessCoarsePairs()
+{
+    if (aiCoreIdx >= usedCoreNum) {
+        return;
+    }
+    if ASCEND_IS_AIV {
+        vectorService.AllocEventID();
+        CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
+        CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
+    } else {
+        matmulService.AllocEventID();
+    }
+
+    const uint32_t totalPairs = CeilDiv(static_cast<uint32_t>(constInfo.batchSize), 2U);
+    const uint32_t pairsPerCore = totalPairs / usedCoreNum;
+    const uint32_t extraPairs = totalPairs % usedCoreNum;
+    const uint32_t pairBegin = aiCoreIdx * pairsPerCore + Min(aiCoreIdx, extraPairs);
+    const uint32_t pairEnd = pairBegin + pairsPerCore + (aiCoreIdx < extraPairs ? 1 : 0);
+    const uint32_t vectorLane = tmpBlockIdx % 2;
+    uint32_t loop = 0;
+    for (uint32_t pair = pairBegin; pair < pairEnd; ++pair) {
+        const uint32_t first = 2 * pair;
+        const uint32_t second = first + 1;
+        const uint32_t k0 = actualSeqLengthsGm.GetValue(first);
+        const uint32_t k1 = second < constInfo.batchSize ? actualSeqLengthsGm.GetValue(second) : 0;
+        const uint32_t steps = CeilDiv(Max(k0, k1), constInfo.s2BaseSize);
+        for (uint32_t s2 = 0; s2 < steps; ++s2, ++loop) {
+            const uint32_t offset = s2 * constInfo.s2BaseSize;
+            if ASCEND_IS_AIC {
+                CrossCoreWaitFlag(constInfo.syncV1C1);
+                PivotCoarseSelectCommon::RunInfo info;
+                if (offset < k0) {
+                    SetPairRunInfo(info, first, s2, k0, 0, loop);
+                    matmulService.ComputeMm1(info);
+                }
+                if (offset < k1) {
+                    SetPairRunInfo(info, second, s2, k1, 1, loop);
+                    matmulService.ComputeMm1(info);
+                }
+                CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_FIX>(constInfo.syncC1V1);
+            } else {
+                CrossCoreWaitFlag(constInfo.syncC1V1);
+                const uint32_t length = vectorLane == 0 ? k0 : k1;
+                if (offset < length) {
+                    PivotCoarseSelectCommon::RunInfo info;
+                    SetPairRunInfo(info, first + vectorLane, s2, length, vectorLane, loop);
+                    vectorService.ProcessVec(info);
+                }
+                CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
+            }
+        }
+    }
+
+    if ASCEND_IS_AIV {
+        vectorService.FreeEventID();
+    } else {
+        matmulService.FreeEventID();
+        CrossCoreWaitFlag(constInfo.syncV1C1);
+        CrossCoreWaitFlag(constInfo.syncV1C1);
     }
 }
 

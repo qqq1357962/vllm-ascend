@@ -101,7 +101,7 @@ private:
     static constexpr uint32_t MERGE_FAN_IN = 4;
     uint32_t pendingTiles_ = 0;
     __aicore__ inline void AccumulateWideTile(const LocalTensor<float> &scores,
-        const LocalTensor<uint32_t> &ids, const LocalTensor<float> &sortScratch, bool lastTile);
+        const LocalTensor<uint32_t> &ids, LocalTensor<float> &sortScratch, bool lastTile);
 
     // tmp buff for LD
     TBuf<> ldToBeMrgBuf_;
@@ -275,7 +275,7 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::CleanInvalidOutput(i
 template <typename LIT>
 __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
     const LocalTensor<float> &scores, const LocalTensor<uint32_t> &ids,
-    const LocalTensor<float> &sortScratch, bool lastTile)
+    LocalTensor<float> &sortScratch, bool lastTile)
 {
     auto tileRuns = sortedTileBuf_.Get<float>();
     const uint32_t tilePairs = s2BaseSize_ * 2;
@@ -299,6 +299,7 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
 template <typename LIT>
 __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const PivotCoarseSelectCommon::RunInfo &info)
 {
+    const uint32_t rowLane = info.pairedRows ? 0 : blockId_ % 2;
     int32_t cuBaseS1Idx = info.gS1Idx * s1BaseSize_;
     int32_t cuBaseS2Idx = info.s2Idx * s2BaseSize_;
 
@@ -313,12 +314,13 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
     int32_t cuS1ProcNum =
         cuS1BeginIdxPerAiv + s1BaseSize_ > info.actS1Size ? info.actS1Size % s1BaseSize_ : s1BaseSize_;
     // cuS1ProcNumPerAiv: 每个AIv的S1计算量
-    int32_t cuS1ProcNumPerAiv = blockId_ % 2 == 0 ? CeilDiv(cuS1ProcNum, 2) : (cuS1ProcNum / 2);
-    cuS1BeginIdxPerAiv += (blockId_ % 2) * CeilDiv(cuS1ProcNum, 2);
+    int32_t cuS1ProcNumPerAiv = rowLane == 0 ? CeilDiv(cuS1ProcNum, 2) : (cuS1ProcNum / 2);
+    cuS1BeginIdxPerAiv += (rowLane) * CeilDiv(cuS1ProcNum, 2);
 
+    mmGmOffset += info.scoreOffset;
     // 基本块基地址偏移奇数核加一个S1地址偏移
-    weightGmOffset += (blockId_ % 2) * CeilDiv(cuS1ProcNum, 2) * kHeadNum_ * gSize_;
-    mmGmOffset += (blockId_ % 2) * CeilDiv(cuS1ProcNum, 2) * gSize_ * info.actualSingleProcessSInnerSizeAlign;
+    weightGmOffset += (rowLane) * CeilDiv(cuS1ProcNum, 2) * kHeadNum_ * gSize_;
+    mmGmOffset += (rowLane) * CeilDiv(cuS1ProcNum, 2) * gSize_ * info.actualSingleProcessSInnerSizeAlign;
 
     // cut G
     int32_t outerG = CeilDiv(gSize_, groupInner_);

@@ -162,7 +162,7 @@ __aicore__ inline void PivotCoarseSelectServiceCube<LIT>::ComputeMm1(const Pivot
             uint64_t s1gL1RealSize =
                 s1gGmOffset + M_BASIC_BLOCK > s1gProcessSize ? s1gProcessSize - s1gGmOffset : M_BASIC_BLOCK;
             if (runInfo.isFirstS2InnerLoop && s2GmOffset == 0) {
-                queryL1Mte2BufIdx_++;
+                queryL1Mte2BufIdx_ = runInfo.pairedRows ? runInfo.vectorLane : queryL1Mte2BufIdx_ + 1;
                 queryL1Mte1BufIdx_ = queryL1Mte2BufIdx_;
                 WaitFlag<HardEvent::MTE1_MTE2>(QUERY_MTE1_MTE2_EVENT + queryL1Mte2BufIdx_ % QUERY_BUF_NUM);
                 QueryNd2Nz(s1gL1RealSize, s1gGmOffset, runInfo);
@@ -170,6 +170,7 @@ __aicore__ inline void PivotCoarseSelectServiceCube<LIT>::ComputeMm1(const Pivot
                 WaitFlag<HardEvent::MTE2_MTE1>(MTE2_MTE1_EVENT);
             } else {
                 queryL1Mte1BufIdx_ =
+                    runInfo.pairedRows ? runInfo.vectorLane :
                     queryL1Mte2BufIdx_ - (CeilDiv(s1gProcessSize, M_BASIC_BLOCK) - 1 - (s1gGmOffset > 0));
             }
             for (uint64_t s2L1Offset = 0; s2L1Offset < s2L1RealSize; s2L1Offset += S2_BASIC_BLOCK_L0) {
@@ -388,7 +389,7 @@ __aicore__ inline void PivotCoarseSelectServiceCube<LIT>::Fixp(uint64_t s1gGmOff
     intriParams.reluPre = 1;
     AscendC::SetFixpipeNz2ndFlag(1, 1, 1);
     AscendC::DataCopy(mm1ResGm_[(runInfo.loop % 2) * constInfo_.mBaseSizeAlign * constInfo_.s2BaseSize +
-                                s1gGmOffset * intriParams.dstStride + s2GmOffset],
+                                runInfo.scoreOffset + s1gGmOffset * intriParams.dstStride + s2GmOffset],
                       cL0_[(l0BufIdx_ % L0_BUF_NUM) * L0C_BUFFER_OFFSET], intriParams);
 }
 

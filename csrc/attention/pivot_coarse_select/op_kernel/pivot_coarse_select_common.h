@@ -65,6 +65,9 @@ struct RunInfo {
     bool isLastS2InnerLoop;
     bool isAllLoopEnd = false;
     bool isValid = false;
+    bool pairedRows = false;
+    uint32_t vectorLane = 0;
+    uint32_t scoreOffset = 0;
 };
 
 struct ConstInfo {
