@@ -95,6 +95,13 @@ private:
     TBuf<TPosition::VECCALC> reduceOutBuf_;
     TBuf<TPosition::VECCALC> brcBuf_;
     TBuf<TPosition::VECCALC> paramBuf_;
+    TBuf<TPosition::VECCALC> sortedTileBuf_;
+
+    // MrgSort accepts four independently sorted runs per instruction.
+    static constexpr uint32_t MERGE_FAN_IN = 4;
+    uint32_t pendingTiles_ = 0;
+    __aicore__ inline void AccumulateWideTile(const LocalTensor<float> &scores,
+        const LocalTensor<uint32_t> &ids, const LocalTensor<float> &sortScratch, bool lastTile);
 
     // tmp buff for LD
     TBuf<> ldToBeMrgBuf_;
@@ -144,6 +151,10 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::InitBuffers(TPipe *p
     pipe->InitBuffer(reduceOutBuf_, s2BaseSize_ * 2 * sizeof(float));                          // 4KB
     pipe->InitBuffer(brcBuf_, groupInner_ * 8 * sizeof(float));
     pipe->InitBuffer(paramBuf_, LD_PARAM_NUM * sizeof(int64_t));
+
+    if (constInfo_.batchWideMerge) {
+        pipe->InitBuffer(sortedTileBuf_, MERGE_FAN_IN * s2BaseSize_ * 2 * sizeof(float));
+    }
 
     tmpUb_ = tmpBuf_.Get<float>();
     globalTopkIndice_ = indexBuf_.Get<int32_t>();
@@ -262,6 +273,30 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::CleanInvalidOutput(i
 }
 
 template <typename LIT>
+__aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
+    const LocalTensor<float> &scores, const LocalTensor<uint32_t> &ids,
+    const LocalTensor<float> &sortScratch, bool lastTile)
+{
+    auto tileRuns = sortedTileBuf_.Get<float>();
+    const uint32_t tilePairs = s2BaseSize_ * 2;
+    Sort<float, true>(tileRuns[pendingTiles_ * tilePairs], scores, ids, sortScratch, s2BaseSize_ / 32);
+    PipeBarrier<PIPE_V>();
+    ++pendingTiles_;
+    if (pendingTiles_ != MERGE_FAN_IN && !lastTile) {
+        return;
+    }
+
+    auto incoming = tileRuns;
+    if (pendingTiles_ > 1) {
+        PivotCoarseSelectVec::MrgBasicBlock(sortScratch, tileRuns, pendingTiles_, s2BaseSize_);
+        PipeBarrier<PIPE_V>();
+        incoming = sortScratch;
+    }
+    PivotCoarseSelectVec::MergeSort(globalTopkUb_, virTopK, incoming, pendingTiles_ * s2BaseSize_, tmpUb_);
+    pendingTiles_ = 0;
+}
+
+template <typename LIT>
 __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const PivotCoarseSelectCommon::RunInfo &info)
 {
     int32_t cuBaseS1Idx = info.gS1Idx * s1BaseSize_;
@@ -293,6 +328,7 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
         // globalTopkUb_ value,index=-inf,-1
         InitSortOutBuf(globalTopkUb_, CeilDiv(s1BaseSize_, 2) * virTopK * 2);
         blockS2StartIdx_ = 0;
+        pendingTiles_ = 0;
     } else if (info.loop == 0) {
         blockS2StartIdx_ = info.s2Idx;
     }
@@ -374,7 +410,10 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
             PipeBarrier<PIPE_V>();
 
             LocalTensor<float> tmpSortBuf = outQueue_.AllocTensor<float>();
-            if (info.actS1Size > 4 || constInfo_.isSparseCountOver2K) {
+            if (constInfo_.batchWideMerge) {
+                AccumulateWideTile(sortScoreUb, sortIndiceUbInt.template ReinterpretCast<uint32_t>(),
+                    tmpSortBuf, isS2End || info.isLastS2InnerLoop);
+            } else if (info.actS1Size > 4 || constInfo_.isSparseCountOver2K) {
                 // info.actS1Size > 4 则单个vector核内处理的 s1>2，缓存方案无法处理
                 PivotCoarseSelectVec::SortAll(reduceOutBuff, tmpSortBuf,
                                       cuS2LenVecAlign); //  cuS2LenVecAlign <= s2BaseSize_, fill -inf

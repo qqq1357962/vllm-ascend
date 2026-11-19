@@ -184,7 +184,13 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::InitTilingData(const PivotC
     constInfo.s2BaseSize = S2_BASE_SIZE;
     constInfo.isSparseCountOver2K = (constInfo.sparseCount <= BASE_TOPK) ? false : true;
 
-    constInfo.s1BaseSize = constInfo.isSparseCountOver2K ? SPARSE_COUNT_8K / constInfo.sparseCount * 2 : 8;
+    // A grouped coarse request has one query per metadata row. Reserve one running list per AIV
+    // and spend the remaining UB on a group of sorted key tiles.
+    constInfo.batchWideMerge = LAYOUT_T == LI_LAYOUT::TND && PAGE_ATTENTION &&
+        constInfo.sparseCount == SPARSE_COUNT_4K && !constInfo.returnValue && !constInfo.attenMaskFlag &&
+        constInfo.batchSize == constInfo.qSeqSize;
+    constInfo.s1BaseSize = constInfo.batchWideMerge ? 2 :
+        (constInfo.isSparseCountOver2K ? SPARSE_COUNT_8K / constInfo.sparseCount * 2 : 8);
     constInfo.mBaseSize = constInfo.s1BaseSize * constInfo.gSize;
     constInfo.mBaseSizeAlign = PivotCoarseSelectCommon::Align(constInfo.mBaseSize, BLOCK_CUBE_SIZE);
 }
