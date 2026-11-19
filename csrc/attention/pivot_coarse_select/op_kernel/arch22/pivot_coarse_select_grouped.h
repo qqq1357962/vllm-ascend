@@ -141,6 +141,42 @@ __aicore__ inline bool CanShareKeyPages(const GlobalTensor<int32_t> &table, uint
     return true;
 }
 
+__aicore__ inline bool CoarseRowsSharePages(const GlobalTensor<int32_t> &table, uint32_t begin, uint32_t count,
+    GlobalTensor<int32_t> &ends, GlobalTensor<int32_t> &lengths, const PivotCoarseSelectTilingData &tiling,
+    const LocalTensor<int32_t> &pageUb)
+{
+    if (begin + count > tiling.bSize) {
+        return false;
+    }
+    uint32_t anchor = begin;
+    uint32_t longest = 0;
+    uint32_t visible[COARSE_PACK_ROWS];
+    for (uint32_t lane = 0; lane < count; ++lane) {
+        const auto group = GetCoarseWindow(ends, lengths, begin + lane, tiling);
+        if (group.upper == 0) {
+            return false;
+        }
+        visible[lane] = group.upper;
+        if (group.upper > longest) {
+            longest = group.upper;
+            anchor = begin + lane;
+        }
+    }
+    const uint32_t stride = tiling.maxBlockNumPerBatch;
+    for (uint32_t lane = 0; lane < count; ++lane) {
+        if (begin + lane == anchor) {
+            continue;
+        }
+        const uint32_t pages = CeilDiv(visible[lane], tiling.blockSize);
+        if (!CanShareKeyPages(table, static_cast<uint64_t>(anchor) * stride,
+                static_cast<uint64_t>(begin + lane) * stride, pages, pageUb, pageUb[PAGE_COMPARE_TILE],
+                pageUb[2 * PAGE_COMPARE_TILE])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 template <typename LIT>
 __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *key, __gm__ uint8_t *weights,
     __gm__ uint8_t *queryEnds, __gm__ uint8_t *keyLengths, __gm__ uint8_t *blockTable,
@@ -155,19 +191,23 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
     const uint32_t qWidth = heads * INDEXER_HEAD_DIM;
     const uint32_t topk = tiling.sparseCount;
     const auto layout = GroupedWorkspace(rows, heads, topk, raw);
+    const bool checkPairs = topk == COARSE_TOPK && rows >= COARSE_VECTOR_LANES * tiling.usedCoreNum;
+    const bool checkPacks = checkPairs && rows >= COARSE_PACK_ROWS * tiling.usedCoreNum &&
+        heads * COARSE_PACK_ROWS <= PivotCoarseSelectServiceCube<LIT>::M_BASIC_BLOCK_L0;
+    const uint32_t compareRows = checkPacks ? COARSE_PACK_ROWS : COARSE_VECTOR_LANES;
     GlobalTensor<int32_t> ends, lengths;
     ends.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(queryEnds));
     lengths.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(keyLengths));
 
     if ASCEND_IS_AIV {
         GlobalTensor<int32_t> proxyEnds, proxyLengths, pages;
-        GlobalTensor<uint32_t> sharedPairs;
+        GlobalTensor<uint32_t> sharedPairs, sharedPacks;
         proxyEnds.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace + layout.queryEnds));
         proxyLengths.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace + layout.history));
         sharedPairs.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(workspace + layout.sharedPairs));
+        sharedPacks.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(workspace + layout.sharedPacks));
 
         TBuf<TPosition::VECCALC> rawBuf, sumBuf, convertedBuf, metaBuf, pageCompareBuf;
-        const bool checkPairs = topk == COARSE_TOPK && rows >= 2 * tiling.usedCoreNum;
         if (checkPairs) {
             pages.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(blockTable));
             pipe.InitBuffer(pageCompareBuf, 3 * PAGE_COMPARE_TILE * sizeof(int32_t));
@@ -193,21 +233,25 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
                 MeanCoarseRows(rawW, proxyW, heads, group, row, rawBuf.Get<W>(),
                     sumBuf.Get<float>(), convertedBuf.Get<float>());
             }
-            if (checkPairs && row % 2 == 0) {
-                const auto tableStride = tiling.maxBlockNumPerBatch;
-                uint32_t pagesInCommon = 0;
-                if (row + 1 < rows) {
-                    const auto next = GetCoarseWindow(ends, lengths, row + 1, tiling);
-                    pagesInCommon = CeilDiv(Min(group.upper, next.upper), tiling.blockSize);
-                }
+            if (checkPairs && row % compareRows == 0) {
                 auto pageUb = pageCompareBuf.Get<int32_t>();
-                const bool shared = CanShareKeyPages(pages, static_cast<uint64_t>(row) * tableStride,
-                    static_cast<uint64_t>(row + 1) * tableStride, pagesInCommon, pageUb, pageUb[PAGE_COMPARE_TILE],
-                    pageUb[2 * PAGE_COMPARE_TILE]);
+                const bool shared = CoarseRowsSharePages(pages, row, compareRows, ends, lengths, tiling, pageUb);
+                auto flags = checkPacks ? sharedPacks : sharedPairs;
                 meta.SetValue(0, shared);
                 SetWaitFlag<HardEvent::S_MTE3>(HardEvent::S_MTE3);
-                DataCopyPad(sharedPairs[row / 2], meta.ReinterpretCast<uint32_t>(), {1, sizeof(uint32_t), 0, 0});
+                DataCopyPad(flags[row / compareRows], meta.ReinterpretCast<uint32_t>(), {1, sizeof(uint32_t), 0, 0});
                 SetWaitFlag<HardEvent::MTE3_S>(HardEvent::MTE3_S);
+                if (checkPacks && !shared) {
+                    for (uint32_t start = row; start < Min(row + compareRows, rows); start += COARSE_VECTOR_LANES) {
+                        const bool pair = CoarseRowsSharePages(pages, start, COARSE_VECTOR_LANES, ends, lengths, tiling,
+                            pageUb);
+                        meta.SetValue(0, pair);
+                        SetWaitFlag<HardEvent::S_MTE3>(HardEvent::S_MTE3);
+                        DataCopyPad(sharedPairs[start / COARSE_VECTOR_LANES], meta.ReinterpretCast<uint32_t>(),
+                            {1, sizeof(uint32_t), 0, 0});
+                        SetWaitFlag<HardEvent::MTE3_S>(HardEvent::MTE3_S);
+                    }
+                }
             }
             meta.SetValue(0, row + 1);
             SetWaitFlag<HardEvent::S_MTE3>(HardEvent::S_MTE3);
@@ -234,7 +278,8 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
     backend.Init(raw ? workspace : query, key, raw ? workspace + layout.weights : weights,
         workspace + layout.queryEnds, workspace + layout.history, blockTable, workspace + layout.picks,
         values, workspace + layout.scan, &scan, &pipe, nullptr,
-        reinterpret_cast<__gm__ const uint32_t *>(workspace + layout.sharedPairs));
+        reinterpret_cast<__gm__ const uint32_t *>(workspace + layout.sharedPairs),
+        checkPacks ? reinterpret_cast<__gm__ const uint32_t *>(workspace + layout.sharedPacks) : nullptr);
     backend.Process();
 
     if ASCEND_IS_AIV {

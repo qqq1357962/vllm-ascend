@@ -16,6 +16,8 @@ constexpr uint32_t PIVOT_TOPK = 2048;
 constexpr uint32_t COARSE_TOPK = 4096;
 constexpr uint32_t MAX_COARSE_GROUP_SIZE = 16; // Match the reference grouped API's limit.
 constexpr uint32_t INDEXER_HEAD_DIM = 128;
+constexpr uint32_t COARSE_VECTOR_LANES = 2; // One Cube core feeds two vector cores on arch22.
+constexpr uint32_t COARSE_PACK_ROWS = 2 * COARSE_VECTOR_LANES; // Two accumulators fit in each vector UB.
 constexpr uint32_t PIVOT_QUERY_WIDTH = 4096;
 constexpr uint32_t PIVOT_WEIGHT_WIDTH = 32;
 
@@ -78,6 +80,7 @@ struct GroupedWorkspace {
     uint64_t queryEnds;
     uint64_t history;
     uint64_t sharedPairs;
+    uint64_t sharedPacks;
     uint64_t scan;
 
     LI_PIVOT_INLINE GroupedWorkspace(uint64_t rows, uint64_t heads, uint32_t topk, bool raw)
@@ -86,7 +89,9 @@ struct GroupedWorkspace {
           queryEnds(picks + PivotAlign(rows * topk * sizeof(int32_t))),
           history(queryEnds + PivotAlign(rows * sizeof(uint32_t))),
           sharedPairs(history + PivotAlign(rows * sizeof(uint32_t))),
-          scan(sharedPairs + PivotAlign(((rows + 1) / 2) * sizeof(uint32_t)))
+          sharedPacks(sharedPairs + PivotAlign(((rows + COARSE_VECTOR_LANES - 1) / COARSE_VECTOR_LANES) *
+              sizeof(uint32_t))),
+          scan(sharedPacks + PivotAlign(((rows + COARSE_PACK_ROWS - 1) / COARSE_PACK_ROWS) * sizeof(uint32_t)))
     {}
 };
 } // namespace PivotCoarseSelectCommon
