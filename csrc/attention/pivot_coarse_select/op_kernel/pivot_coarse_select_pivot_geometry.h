@@ -13,6 +13,9 @@
 namespace PivotCoarseSelectCommon {
 constexpr uint32_t PIVOT_GROUP_SIZE = 4;
 constexpr uint32_t PIVOT_TOPK = 2048;
+constexpr uint32_t COARSE_TOPK = 4096;
+constexpr uint32_t MAX_COARSE_GROUP_SIZE = 16;
+constexpr uint32_t INDEXER_HEAD_DIM = 128;
 constexpr uint32_t PIVOT_QUERY_WIDTH = 4096;
 constexpr uint32_t PIVOT_WEIGHT_WIDTH = 32;
 
@@ -60,12 +63,28 @@ struct PivotWorkspace {
     uint64_t lengths;
     uint64_t native;
 
-    LI_PIVOT_INLINE PivotWorkspace(uint64_t rows, uint64_t batches)
+    LI_PIVOT_INLINE PivotWorkspace(uint64_t rows, uint64_t batches, uint32_t topk = PIVOT_TOPK)
         : weights(PivotAlign(rows * PIVOT_QUERY_WIDTH * 2)),
           indices(weights + PivotAlign(rows * PIVOT_WEIGHT_WIDTH * sizeof(float))),
-          groups(indices + PivotAlign(rows * PIVOT_TOPK * sizeof(int32_t))),
+          groups(indices + PivotAlign(rows * topk * sizeof(int32_t))),
           lengths(groups + PivotAlign(rows * sizeof(PivotGroup))),
           native(lengths + PivotAlign(batches * sizeof(uint32_t)))
+    {}
+};
+
+struct GroupedWorkspace {
+    uint64_t weights;
+    uint64_t picks;
+    uint64_t queryEnds;
+    uint64_t history;
+    uint64_t scan;
+
+    LI_PIVOT_INLINE GroupedWorkspace(uint64_t rows, uint64_t heads, uint32_t topk, bool raw)
+        : weights(raw ? PivotAlign(rows * heads * INDEXER_HEAD_DIM * sizeof(uint16_t)) : 0),
+          picks(weights + (raw ? PivotAlign(rows * heads * sizeof(float)) : 0)),
+          queryEnds(picks + PivotAlign(rows * topk * sizeof(int32_t))),
+          history(queryEnds + PivotAlign(rows * sizeof(uint32_t))),
+          scan(history + PivotAlign(rows * sizeof(uint32_t)))
     {}
 };
 } // namespace PivotCoarseSelectCommon

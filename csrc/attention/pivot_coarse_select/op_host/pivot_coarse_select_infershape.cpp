@@ -22,7 +22,9 @@ using namespace ge;
 namespace ops {
 constexpr uint32_t QUERY_INDEX = 0;
 constexpr uint32_t KEY_INDEX = 1;
-constexpr uint32_t ACTUAL_SEQ_K_INDEX = 4;
+constexpr uint32_t ACTUAL_SEQ_Q_INDEX = 3;
+constexpr uint32_t ATTR_GROUP_SIZE_INDEX = 7;
+constexpr uint32_t ATTR_MODIFY_LOCALWINDOW_INDEX = 9;
 constexpr uint32_t ATTR_QUERY_LAYOUT_INDEX = 0;
 constexpr uint32_t ATTR_KEY_LAYOUT_INDEX = 1;
 constexpr uint32_t ATTR_SPARSE_COUNT_INDEX = 2;
@@ -56,6 +58,28 @@ static ge::graphStatus InferShapePivotCoarseSelect(gert::InferShapeContext *cont
         inputLayoutQueryPtrStr != "TND" && inputLayoutQueryPtrStr != "BSND",
         OP_LOGE(context, "The attr layout_query should be TND or BSND, but got %s.", inputLayoutQueryPtrStr.c_str()),
         return ge::GRAPH_FAILED);
+
+    auto *aslkShape = context->GetOutputShape(2);
+    OP_CHECK_NULL_WITH_CONTEXT(context, aslkShape);
+    aslkShape->SetDimNum(1);
+    const auto groupSize = attrs->GetInt(ATTR_GROUP_SIZE_INDEX);
+    const auto modifyLocalwindow = attrs->GetBool(ATTR_MODIFY_LOCALWINDOW_INDEX);
+    OP_CHECK_NULL_WITH_CONTEXT(context, groupSize);
+    OP_CHECK_NULL_WITH_CONTEXT(context, modifyLocalwindow);
+    aslkShape->SetDim(0, 0);
+    if (*groupSize != 0) {
+        const auto *queryEnds = context->GetOptionalInputShape(ACTUAL_SEQ_Q_INDEX);
+        OP_CHECK_NULL_WITH_CONTEXT(context, queryEnds);
+        const auto rows = *modifyLocalwindow ? queryShape->GetDim(0) : queryEnds->GetDim(0);
+        aslkShape->SetDim(0, rows);
+        sparseIndicesShape->SetDimNum(3);
+        sparseIndicesShape->SetDim(0, rows);
+        sparseIndicesShape->SetDim(1, 1);
+        sparseIndicesShape->SetDim(2, *seleced_count);
+        sparseValuesShape->SetDimNum(1);
+        sparseValuesShape->SetDim(0, 0);
+        return ge::GRAPH_SUCCESS;
+    }
 
     sparseIndicesShape->SetDimNum(queryShape->GetDimNum());
     if (inputLayoutQueryPtrStr == "BSND") {
@@ -102,6 +126,7 @@ static ge::graphStatus InferDataTypePivotCoarseSelect(gert::InferDataTypeContext
     // attention_out, outidx:0
     context->SetOutputDataType(0, outputType);
     context->SetOutputDataType(1, context->GetInputDataType(QUERY_INDEX));
+    context->SetOutputDataType(2, ge::DT_INT32);
     OP_LOGI(context->GetNodeName(), "PivotCoarseSelect InferDataType end.");
     return GRAPH_SUCCESS;
 }

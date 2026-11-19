@@ -58,6 +58,10 @@ public:
             .ParamType(REQUIRED)
             .DataType({ge::DT_BF16, ge::DT_FLOAT16, ge::DT_BF16, ge::DT_FLOAT16})
             .FormatList({ge::FORMAT_ND});
+        this->Output("aslk")
+            .ParamType(REQUIRED)
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND});
         this->Attr("layout_query").AttrType(OPTIONAL).String("BSND");
         this->Attr("layout_key").AttrType(OPTIONAL).String("BSND");
         this->Attr("sparse_count").AttrType(OPTIONAL).Int(2048); // 2048:默认值，筛选前2048
@@ -65,6 +69,9 @@ public:
         this->Attr("pre_tokens").AttrType(OPTIONAL).Int(INT64_MAX);
         this->Attr("next_tokens").AttrType(OPTIONAL).Int(INT64_MAX);
         this->Attr("return_values").AttrType(OPTIONAL).Bool(false);
+        this->Attr("group_size").AttrType(OPTIONAL).Int(0);
+        this->Attr("proxy_mode").AttrType(OPTIONAL).Int(0);
+        this->Attr("is_modify_localwindow").AttrType(OPTIONAL).Bool(false);
         OpAICoreConfig aicore_config;
         aicore_config.DynamicCompileStaticFlag(true)
             .DynamicFormatFlag(true)

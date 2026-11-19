@@ -96,8 +96,12 @@ aclnnStatus aclnnPivotCoarseSelectGetWorkspaceSize(
         int64_t preTokens,
         int64_t nextTokens,
         bool returnValues,
+        int64_t groupSize,
+        int64_t proxyMode,
+        bool modifyLocalwindow,
         const aclTensor *sparseIndicesOut,
         const aclTensor *sparseValuesOut,
+        const aclTensor *aslkOut,
         uint64_t *workspaceSize,
         aclOpExecutor **executor)
 {
@@ -122,7 +126,7 @@ aclnnStatus aclnnPivotCoarseSelectGetWorkspaceSize(
     return aclnnInnerPivotCoarseSelectGetWorkspaceSize(
         query, key, weights, actualSeqLengthsQueryOptional, actualSeqLengthsKeyOptional, blockTableOptional,
         layoutQueryOptional, layoutKeyOptional, sparseCount, sparseMode, preTokens, nextTokens, returnValues,
-        sparseIndicesOut, sparseValuesOut, workspaceSize, executor);
+        groupSize, proxyMode, modifyLocalwindow, sparseIndicesOut, sparseValuesOut, aslkOut, workspaceSize, executor);
 }
 
 aclnnStatus aclnnPivotCoarseSelect(void *workspace, uint64_t workspaceSize, aclOpExecutor *executor,

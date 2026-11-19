@@ -598,7 +598,8 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessInvalid()
     if ASCEND_IS_AIV {
         uint32_t aivCoreNum = GetBlockNum() * 2; // 2 means c:v = 1:2
         uint64_t totalOutputSize =
-            constInfo.batchSize * constInfo.qSeqSize * constInfo.kHeadNum * constInfo.sparseCount;
+            (constInfo.isAccumSeqS1 ? constInfo.qSeqSize : constInfo.batchSize * constInfo.qSeqSize) *
+            constInfo.kHeadNum * constInfo.sparseCount;
         uint64_t singleCoreSize =
             PivotCoarseSelectCommon::Align((totalOutputSize + aivCoreNum - 1) / aivCoreNum, GM_ALIGN_BYTES / sizeof(OUT_T));
         uint64_t baseSize = tmpBlockIdx * singleCoreSize;

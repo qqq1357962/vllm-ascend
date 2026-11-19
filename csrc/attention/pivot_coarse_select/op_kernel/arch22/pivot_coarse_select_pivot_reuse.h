@@ -100,7 +100,9 @@ __aicore__ inline bool TryPivotReuse(__gm__ uint8_t *query, __gm__ uint8_t *key,
         PivotReuseProbe<LIT>("flag1", 1, false, original, 0, 0, 0, 0);
         return false;
     }
-    if (original.bSize == 0 || original.gSize != 32 || original.sparseCount != PIVOT_TOPK ||
+    const uint32_t topk = original.sparseCount;
+    const bool wideLocal = original.modifyLocalwindow != 0 && topk == COARSE_TOPK;
+    if (original.bSize == 0 || original.gSize != PIVOT_WEIGHT_WIDTH || (topk != PIVOT_TOPK && !wideLocal) ||
         original.sparseMode != 3 || original.returnValue || original.usedCoreNum == 0 ||
         queryLengths == nullptr || keyLengths == nullptr ||
         (LIT::layout != LI_LAYOUT::TND && original.bSize != 1)) {
@@ -133,7 +135,7 @@ __aicore__ inline bool TryPivotReuse(__gm__ uint8_t *query, __gm__ uint8_t *key,
     }
     PivotReuseProbe<LIT>("flag5", 5, true, original, original.bSize, rowStart, 0, totalGroups);
 
-    PivotWorkspace offsets(totalGroups, original.bSize);
+    PivotWorkspace offsets(totalGroups, original.bSize, topk);
     auto groups = reinterpret_cast<__gm__ PivotGroup *>(workspace + offsets.groups);
     GlobalTensor<uint32_t> groupWords, groupEnds;
     groupWords.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(groups));
@@ -206,7 +208,7 @@ __aicore__ inline bool TryPivotReuse(__gm__ uint8_t *query, __gm__ uint8_t *key,
         SyncAll();
         pipe.Reset();
         TBuf<TPosition::VECCALC> resultBuf;
-        pipe.InitBuffer(resultBuf, PIVOT_TOPK * sizeof(int32_t));
+        pipe.InitBuffer(resultBuf, topk * sizeof(int32_t));
         auto result = resultBuf.Get<int32_t>();
         GlobalTensor<int32_t> packed, output;
         packed.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace + offsets.indices));
@@ -214,23 +216,23 @@ __aicore__ inline bool TryPivotReuse(__gm__ uint8_t *query, __gm__ uint8_t *key,
         for (uint32_t g = GetBlockIdx(); g < totalGroups; g += GetBlockNum() * 2) {
             PivotGroup group{groups[g].sourceRow, groups[g].copies, groups[g].visibleKeys};
             if (group.visibleKeys == 0) {
-                Duplicate(result, int32_t(-1), PIVOT_TOPK);
+                Duplicate(result, int32_t(-1), topk);
                 SetFlag<HardEvent::V_S>(EVENT_ID0);
                 WaitFlag<HardEvent::V_S>(EVENT_ID0);
             } else {
-                DataCopy(result, packed[static_cast<uint64_t>(g) * PIVOT_TOPK], PIVOT_TOPK);
+                DataCopy(result, packed[static_cast<uint64_t>(g) * topk], topk);
                 SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
                 WaitFlag<HardEvent::MTE2_S>(EVENT_ID0);
             }
             for (uint32_t r = 0; r < group.copies; ++r) {
                 if (group.visibleKeys != 0) {
                     for (uint32_t j = 0; j < r; ++j) {
-                        result.SetValue(PIVOT_TOPK - r + j, group.visibleKeys + j);
+                        result.SetValue(topk - r + j, group.visibleKeys + j);
                     }
                 }
                 SetFlag<HardEvent::S_MTE3>(EVENT_ID0);
                 WaitFlag<HardEvent::S_MTE3>(EVENT_ID0);
-                DataCopy(output[static_cast<uint64_t>(group.sourceRow + r) * PIVOT_TOPK], result, PIVOT_TOPK);
+                DataCopy(output[static_cast<uint64_t>(group.sourceRow + r) * topk], result, topk);
                 SetFlag<HardEvent::MTE3_S>(EVENT_ID0);
                 WaitFlag<HardEvent::MTE3_S>(EVENT_ID0);
             }

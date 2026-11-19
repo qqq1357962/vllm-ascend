@@ -53,6 +53,7 @@ constexpr uint32_t BLOCK_TABLE_INDEX = 5;
 //Outputs Index
 constexpr uint32_t PIVOT_COARSE_SELECT = 0;
 constexpr uint32_t LIGHTNING_VALUES = 1;
+constexpr uint32_t ASLK_INDEX = 2;
 // Attributes Index
 constexpr uint32_t ATTR_QUERY_LAYOUT_INDEX = 0;
 constexpr uint32_t ATTR_KEY_LAYOUT_INDEX = 1;
@@ -61,6 +62,9 @@ constexpr uint32_t ATTR_SPARSE_MODE_INDEX = 3;
 constexpr uint32_t ATTR_PRE_TOKENS_INDEX = 4;
 constexpr uint32_t ATTR_NEXT_TOKENS_INDEX = 5;
 constexpr uint32_t ATTR_RETURN_VALUE_INDEX = 6;
+constexpr uint32_t ATTR_GROUP_SIZE_INDEX = 7;
+constexpr uint32_t ATTR_PROXY_MODE_INDEX = 8;
+constexpr uint32_t ATTR_MODIFY_LOCALWINDOW_INDEX = 9;
 // Dim Index
 constexpr uint32_t DIM_IDX_ONE = 1;
 constexpr uint32_t DIM_IDX_TWO = 2;
@@ -90,6 +94,9 @@ TILING_DATA_FIELD_DEF(uint32_t, sparseMode)
 TILING_DATA_FIELD_DEF(int64_t, preTokens)
 TILING_DATA_FIELD_DEF(int64_t, nextTokens)
 TILING_DATA_FIELD_DEF(uint32_t, returnValue)
+TILING_DATA_FIELD_DEF(uint32_t, groupSize)
+TILING_DATA_FIELD_DEF(uint32_t, proxyMode)
+TILING_DATA_FIELD_DEF(uint32_t, modifyLocalwindow)
 END_TILING_DATA_DEF
 REGISTER_TILING_DATA_CLASS(PivotCoarseSelect, PivotCoarseSelectTilingData)
 
@@ -106,6 +113,10 @@ struct PivotLIParaInfo {
     PivotTilingOptionalParaInfo blockTable = {nullptr, nullptr};
     PivotTilingRequiredParaInfo attenOut = {nullptr, nullptr};
     PivotTilingRequiredParaInfo valuesOut = {nullptr, nullptr};
+    const gert::StorageShape *aslkShape = nullptr;
+    int32_t groupSize = 0;
+    int32_t proxyMode = 0;
+    bool modifyLocalwindow = false;
 
     const char *layOut = nullptr;
     const char *layOutKey = nullptr;

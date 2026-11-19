@@ -37,8 +37,12 @@ aclnnStatus aclnnPivotCoarseSelectGetWorkspaceSize(
     int64_t preTokens,
     int64_t nextTokens,
     bool returnValues,
-    const aclTensor *sparseIndicesOut,
-    const aclTensor *sparseValuesOut,
+        int64_t groupSize,
+        int64_t proxyMode,
+        bool modifyLocalwindow,
+        const aclTensor *sparseIndicesOut,
+        const aclTensor *sparseValuesOut,
+        const aclTensor *aslkOut,
     uint64_t *workspaceSize,
     aclOpExecutor **executor);
 

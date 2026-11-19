@@ -138,6 +138,7 @@ void PivotPivotCoarseSelectInfoParser::GetOutputParaInfo()
     opParamInfo_.attenOut.shape = context_->GetOutputShape(PIVOT_COARSE_SELECT);
     opParamInfo_.valuesOut.desc = context_->GetOutputDesc(LIGHTNING_VALUES);
     opParamInfo_.valuesOut.shape = context_->GetOutputShape(LIGHTNING_VALUES);
+    opParamInfo_.aslkShape = context_->GetOutputShape(ASLK_INDEX);
 }
 
 ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckAttrParaInfo()
@@ -153,6 +154,24 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckAttrParaInfo()
     opParamInfo_.preTokens = attrs->GetAttrPointer<int64_t>(ATTR_PRE_TOKENS_INDEX);
     opParamInfo_.nextTokens = attrs->GetAttrPointer<int64_t>(ATTR_NEXT_TOKENS_INDEX);
     opParamInfo_.returnValue = attrs->GetAttrPointer<bool>(ATTR_RETURN_VALUE_INDEX);
+    opParamInfo_.groupSize = *attrs->GetAttrPointer<int32_t>(ATTR_GROUP_SIZE_INDEX);
+    opParamInfo_.proxyMode = *attrs->GetAttrPointer<int32_t>(ATTR_PROXY_MODE_INDEX);
+    opParamInfo_.modifyLocalwindow = *attrs->GetAttrPointer<bool>(ATTR_MODIFY_LOCALWINDOW_INDEX);
+    const bool coarse = opParamInfo_.groupSize != 0;
+    if (coarse) {
+        OP_CHECK_IF(opParamInfo_.groupSize < 1 ||
+                        opParamInfo_.groupSize > PivotCoarseSelectCommon::MAX_COARSE_GROUP_SIZE ||
+                        (opParamInfo_.proxyMode != 0 && opParamInfo_.proxyMode != 1) ||
+                        (opParamInfo_.modifyLocalwindow &&
+                         (opParamInfo_.proxyMode != 1 || opParamInfo_.groupSize !=
+                                                        PivotCoarseSelectCommon::PIVOT_GROUP_SIZE)) ||
+                        (*opParamInfo_.sparseCount != PivotCoarseSelectCommon::PIVOT_TOPK &&
+                         *opParamInfo_.sparseCount != PivotCoarseSelectCommon::COARSE_TOPK) ||
+                        std::string(opParamInfo_.layOut) != "TND" ||
+                        std::string(opParamInfo_.layOutKey) != "PA_BSND" || *opParamInfo_.returnValue,
+                    OP_LOGE(opName_, "Invalid grouped coarse-select attributes."),
+                    return ge::GRAPH_FAILED);
+    }
     if (opParamInfo_.layOut != nullptr) {
         OP_LOGI(context_->GetNodeName(), "layout_query is:%s", opParamInfo_.layOut);
     }
@@ -527,8 +546,20 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::ValidateInputShapesMatchQtnd()
     }
     // -----------------------check T-------------------
     uint32_t qTsize = opParamInfo_.query.shape->GetStorageShape().GetDim(0);
+    const bool grouped = opParamInfo_.groupSize != 0 && !opParamInfo_.modifyLocalwindow;
+    const uint32_t outputRows = grouped ? bSize_ : qTsize;
+    if (opParamInfo_.groupSize != 0) {
+        OP_CHECK_IF(opParamInfo_.aslkShape == nullptr || n2Size_ != 1 ||
+                        (opParamInfo_.modifyLocalwindow && n1Size_ != PivotCoarseSelectCommon::PIVOT_WEIGHT_WIDTH) ||
+                        (grouped && opParamInfo_.proxyMode == 0 && qTsize != bSize_) ||
+                        (grouped && opParamInfo_.proxyMode != 0 &&
+                         (qTsize < bSize_ || qTsize > static_cast<uint64_t>(bSize_) * opParamInfo_.groupSize)) ||
+                        opParamInfo_.aslkShape->GetStorageShape().GetDim(0) != outputRows,
+                    OP_LOGE(opName_, "Coarse-select query or output shape does not match its grouping mode."),
+                    return ge::GRAPH_FAILED);
+    }
     OP_CHECK_IF((opParamInfo_.weights.shape->GetStorageShape().GetDim(0) != qTsize) ||
-                (opParamInfo_.attenOut.shape->GetStorageShape().GetDim(0) != qTsize),
+                (opParamInfo_.attenOut.shape->GetStorageShape().GetDim(0) != outputRows),
                 OP_LOGE(opName_, "TND case input query, weights and sparse_indices dim 0 are %u, %ld, %ld respectively, they must be same.",
                     qTsize, opParamInfo_.weights.shape->GetStorageShape().GetDim(0),
                     opParamInfo_.attenOut.shape->GetStorageShape().GetDim(0)),
@@ -774,13 +805,20 @@ ge::graphStatus PivotCoarseSelectTiling::DoTiling(PivotPivotCoarseSelectTilingIn
         workspaceSize +=
             V1_DECODE_DATA_NUM * S1_BASE_SIZE * V1_DECODE_PARAM_NUM * V1_DECODE_PARAM_ELEM_SIZE * aicNum;
     }
+    const auto &params = tilingInfo->opParamInfo;
+    if (params.groupSize != 0 && !params.modifyLocalwindow) {
+        workspaceSize += PivotCoarseSelectCommon::GroupedWorkspace(
+            tilingInfo->bSize, tilingInfo->gSize, tilingInfo->sparseCount, params.proxyMode != 0).scan;
+    }
     if (ascendcPlatform.GetCurNpuArch() == NpuArch::DAV_2201 && tilingInfo->pageAttentionFlag &&
-        tilingInfo->gSize == 32 && tilingInfo->sparseCount == PivotCoarseSelectCommon::PIVOT_TOPK &&
+        tilingInfo->gSize == PivotCoarseSelectCommon::PIVOT_WEIGHT_WIDTH &&
+        (tilingInfo->sparseCount == PivotCoarseSelectCommon::PIVOT_TOPK ||
+         (params.modifyLocalwindow && tilingInfo->sparseCount == PivotCoarseSelectCommon::COARSE_TOPK)) &&
         tilingInfo->sparseMode == 3 && !tilingInfo->returnValue &&
         (tilingInfo->inputQLayout == PivotDataLayout::TND || tilingInfo->bSize == 1)) {
         uint64_t rows = context_->GetInputShape(0)->GetStorageShape().GetShapeSize() /
                         PivotCoarseSelectCommon::PIVOT_QUERY_WIDTH;
-        workspaceSize += PivotCoarseSelectCommon::PivotWorkspace(rows, tilingInfo->bSize).native;
+        workspaceSize += PivotCoarseSelectCommon::PivotWorkspace(rows, tilingInfo->bSize, tilingInfo->sparseCount).native;
     }
     size_t *workSpaces = context_->GetWorkspaceSizes(1);
     workSpaces[0] = workspaceSize;
@@ -797,6 +835,9 @@ ge::graphStatus PivotCoarseSelectTiling::DoTiling(PivotPivotCoarseSelectTilingIn
     tilingData_.set_preTokens(tilingInfo->preTokens);
     tilingData_.set_nextTokens(tilingInfo->nextTokens);
     tilingData_.set_returnValue(tilingInfo->returnValue);
+    tilingData_.set_groupSize(params.groupSize);
+    tilingData_.set_proxyMode(params.proxyMode);
+    tilingData_.set_modifyLocalwindow(params.modifyLocalwindow);
     tilingData_.set_usedCoreNum(blockDim);
     tilingData_.SaveToBuffer(context_->GetRawTilingData()->GetData(), context_->GetRawTilingData()->GetCapacity());
     context_->GetRawTilingData()->SetDataSize(tilingData_.GetDataSize());
