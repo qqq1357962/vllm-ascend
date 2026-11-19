@@ -32,7 +32,6 @@ constexpr uint32_t LD_PARAM_NUM = 16;
 constexpr uint32_t EVENTID_V_TO_MTE2_PING = 0;
 constexpr uint32_t EVENTID_V_TO_MTE2_PONG = 1;
 constexpr uint32_t EVENTID_V_TO_MTE2_TMPUB = 2;
-constexpr uint32_t EVENTID_SCORE_AHEAD = 3; // Separate credit for the next tile's first head DMA.
 
 // 主模板：Q_T必选，W_T可选（默认void），无论W_T传什么，默认weightsType=Q_T
 template<typename Q_T, typename W_T = void>
@@ -62,8 +61,7 @@ public:
     using MM1_OUT_T = float;
 
     __aicore__ inline PivotCoarseSelectServiceVector(){};
-    __aicore__ inline void ProcessVec(const PivotCoarseSelectCommon::RunInfo &info,
-        const PivotCoarseSelectCommon::RunInfo *next = nullptr, bool ahead = false);
+    __aicore__ inline void ProcessVec(const PivotCoarseSelectCommon::RunInfo &info);
     __aicore__ inline void ProcessLD();
     __aicore__ inline void ProcessWideSplitLD();
     __aicore__ inline void InitBuffers(TPipe *pipe);
@@ -99,7 +97,6 @@ private:
     TBuf<TPosition::VECCALC> brcBuf_;
     TBuf<TPosition::VECCALC> paramBuf_;
     TBuf<TPosition::VECCALC> sortedTileBuf_;
-    TBuf<TPosition::VECCALC> scoreAheadBuf_;
 
     // MrgSort accepts four independently sorted runs per instruction.
     static constexpr uint32_t MERGE_FAN_IN = PivotCoarseSelectVec::MRG_BLOCK_4;
@@ -112,7 +109,6 @@ private:
     uint32_t pendingTiles_ = 0;
     __aicore__ inline void LoadScaleTile(int32_t headTile, int64_t rowOffset, int64_t weightOffset,
         int32_t scoreStride, int32_t mmUbStride);
-    __aicore__ inline void PrefetchFirstHead(const PivotCoarseSelectCommon::RunInfo &next);
     __aicore__ inline void AccumulateWideTile(const LocalTensor<float> &scores,
         const LocalTensor<uint32_t> &ids, LocalTensor<float> &sortScratch, bool lastTile);
 
@@ -167,9 +163,6 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::InitBuffers(TPipe *p
 
     if (constInfo_.batchWideMerge) {
         pipe->InitBuffer(sortedTileBuf_, MERGE_FAN_IN * s2BaseSize_ * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM * sizeof(float));
-    }
-    if (constInfo_.pairedSchedule) {
-        pipe->InitBuffer(scoreAheadBuf_, (groupInner_ + 1) * s2BaseSize_ * sizeof(float));
     }
 
     tmpUb_ = tmpBuf_.Get<float>();
@@ -248,9 +241,6 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AllocEventID()
     SetFlag<HardEvent::V_MTE2>(EVENTID_V_TO_MTE2_PING);
     SetFlag<HardEvent::V_MTE2>(EVENTID_V_TO_MTE2_PONG);
     SetFlag<HardEvent::V_MTE2>(EVENTID_V_TO_MTE2_TMPUB);
-    if (constInfo_.pairedSchedule) {
-        SetFlag<HardEvent::V_MTE2>(EVENTID_SCORE_AHEAD);
-    }
 }
 
 template <typename LIT>
@@ -259,9 +249,6 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::FreeEventID()
     WaitFlag<HardEvent::V_MTE2>(EVENTID_V_TO_MTE2_PING);
     WaitFlag<HardEvent::V_MTE2>(EVENTID_V_TO_MTE2_PONG);
     WaitFlag<HardEvent::V_MTE2>(EVENTID_V_TO_MTE2_TMPUB);
-    if (constInfo_.pairedSchedule) {
-        WaitFlag<HardEvent::V_MTE2>(EVENTID_SCORE_AHEAD);
-    }
 }
 
 template <typename LIT>
@@ -313,26 +300,6 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::LoadScaleTile(int32_
 }
 
 template <typename LIT>
-__aicore__ inline void PivotCoarseSelectServiceVector<LIT>::PrefetchFirstHead(
-    const PivotCoarseSelectCommon::RunInfo &next)
-{
-    const int32_t count = Min(groupInner_, gSize_);
-    const int64_t scoreOffset = (next.loop % 2) * constInfo_.mBaseSizeAlign * s2BaseSize_ + next.scoreOffset;
-    const int32_t stride = (s2BaseSize_ - next.actualSingleProcessSInnerSizeAlign) / B32_BLOCK_ALIGN_NUM;
-    auto tile = scoreAheadBuf_.Get<float>();
-    auto weight = tile[count * s2BaseSize_].template ReinterpretCast<W_T>();
-    if constexpr (!IsSameType<W_T, float>::value) {
-        weight = weight[groupInner_];
-    }
-    // AIC consumes two initial credits, so one additional score slot can be ready while the current tile is ranked.
-    CrossCoreWaitFlag(constInfo_.syncC1V1);
-    WaitFlag<HardEvent::V_MTE2>(EVENTID_SCORE_AHEAD);
-    PivotCoarseSelectVec::CopyIn(tile, weight, mm1ResGm, weightsGm, scoreOffset, next.tensorWeightsOffset,
-        count, next.actualSingleProcessSInnerSizeAlign, stride);
-    SetFlag<HardEvent::MTE2_V>(EVENTID_SCORE_AHEAD);
-}
-
-template <typename LIT>
 __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
     const LocalTensor<float> &scores, const LocalTensor<uint32_t> &ids,
     LocalTensor<float> &sortScratch, bool lastTile)
@@ -375,8 +342,7 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
 }
 
 template <typename LIT>
-__aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const PivotCoarseSelectCommon::RunInfo &info,
-    const PivotCoarseSelectCommon::RunInfo *next, bool ahead)
+__aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const PivotCoarseSelectCommon::RunInfo &info)
 {
     const uint32_t rowLane = info.pairedRows ? 0 : blockId_ % 2;
     int32_t cuBaseS1Idx = info.gS1Idx * s1BaseSize_;
@@ -446,16 +412,13 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
             const bool fastWide = !LIT::pivotReuse && constInfo_.batchWideMerge;
             const int64_t rowOffset = mmGmOffset + innerS1Idx * gSize_ * info.actualSingleProcessSInnerSizeAlign;
             const int64_t weightOffset = weightGmOffset + innerS1Idx * gSize_;
-            if (fastWide && !ahead) {
+            if (fastWide) {
                 LoadScaleTile(0, rowOffset, weightOffset, info.actualSingleProcessSInnerSizeAlign, mmUbStride);
             }
             for (int32_t headTile = 0; headTile < outerG; ++headTile) {
                 const int32_t count = Min(groupInner_, gSize_ - headTile * groupInner_);
                 const int32_t slot = headTile % 2;
-                const bool useAhead = ahead && headTile == 0;
-                const uint32_t event = useAhead ? EVENTID_SCORE_AHEAD : slot;
-                auto tile = useAhead ? scoreAheadBuf_.Get<float>() :
-                    tmpUb_[slot * (groupInner_ * s2BaseSize_ + s2BaseSize_)];
+                auto tile = tmpUb_[slot * (groupInner_ * s2BaseSize_ + s2BaseSize_)];
                 auto fp32Weight = tile[count * s2BaseSize_];
                 auto weight = fp32Weight.template ReinterpretCast<W_T>();
                 if constexpr (!IsSameType<W_T, float>::value) {
@@ -467,13 +430,10 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
                     // Submit the next DMA into the other slot before scaling the current scores.
                     LoadScaleTile(headTile + 1, rowOffset, weightOffset, info.actualSingleProcessSInnerSizeAlign, mmUbStride);
                 }
-                WaitFlag<HardEvent::MTE2_V>(event);
+                WaitFlag<HardEvent::MTE2_V>(slot);
                 PivotCoarseSelectVec::DoScale(reduceCacheBuf[REDUCE_BANK_CONFLICT_NUM], tile, fp32Weight, weight,
                     brcBuf, count, s2BaseSize_, headTile);
-                SetFlag<HardEvent::V_MTE2>(event);
-            }
-            if (next != nullptr) {
-                PrefetchFirstHead(*next);
+                SetFlag<HardEvent::V_MTE2>(slot);
             }
 
             int32_t gRedCnt = groupInner_ > gSize_ ? gSize_ : groupInner_;
