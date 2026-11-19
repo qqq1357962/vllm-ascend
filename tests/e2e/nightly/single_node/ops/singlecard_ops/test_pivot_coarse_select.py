@@ -115,3 +115,43 @@ def test_short_grouped_window_deduplicates_and_empty_rows_are_padded(inputs):
         indices = candidates[row].tolist()
         assert sorted(indices[:count]) == list(range(count))
         assert set(indices[count:]) == {-1}
+
+
+@torch.inference_mode()
+def test_paired_groups_use_their_own_key_tables(inputs):
+    q, w, k, metadata = inputs
+    props = torch_npu.npu.get_device_properties(torch.npu.current_device())
+    core_count = getattr(props, "cube_core_num", None)
+    if not core_count:
+        pytest.skip("requires device Cube core count to select the paired schedule")
+    rows = 2 * core_count + 1
+    # Alternate different KV tables, including a final unpaired row.
+    pattern = torch.arange(rows, device="npu") % len(metadata["block_table"])
+    table = metadata["block_table"].index_select(0, pattern)
+    base_q = q.unflatten(0, (-1, GROUP_SIZE)).float().mean(1).to(q.dtype)
+    base_w = w.unflatten(0, (-1, GROUP_SIZE)).float().mean(1).to(w.dtype)
+    lengths = metadata["actual_seq_lengths_key"]
+    # Use different tail lengths to exercise partially filled score buffers.
+    lengths[1] -= PAGE + 1
+    ends = metadata["actual_seq_lengths_query"]
+    op = torch.ops._C_ascend.npu_indexer_coarse_screen
+    expected, sizes = op(
+        base_q,
+        base_w,
+        k,
+        actual_seq_lengths_query=ends,
+        actual_seq_lengths_key=lengths,
+        block_table=metadata["block_table"],
+        coarse_count=4096,
+    )
+    actual, actual_sizes = op(
+        base_q.index_select(0, pattern),
+        base_w.index_select(0, pattern),
+        k,
+        actual_seq_lengths_query=torch.arange(1, rows + 1, device="npu", dtype=torch.int32) * GROUP_SIZE,
+        actual_seq_lengths_key=lengths.index_select(0, pattern),
+        block_table=table,
+        coarse_count=4096,
+    )
+    torch.testing.assert_close(actual, expected.index_select(0, pattern), rtol=0, atol=0)
+    torch.testing.assert_close(actual_sizes, sizes.index_select(0, pattern), rtol=0, atol=0)
