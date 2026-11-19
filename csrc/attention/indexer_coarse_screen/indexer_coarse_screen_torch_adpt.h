@@ -16,6 +16,8 @@
 #ifndef INDEXER_COARSE_SCREEN_TORCH_ADPT_H
 #define INDEXER_COARSE_SCREEN_TORCH_ADPT_H
 
+#include "indexer_coarse_screen_v2.h"
+
 namespace vllm_ascend {
 std::tuple<at::Tensor, at::Tensor> construct_indexer_coarse_screen_output_tensor(
     const at::Tensor& actual_seq_lengths_query, const at::Tensor& q_bar, int64_t coarse_count, int64_t has_window,
@@ -45,13 +47,11 @@ std::tuple<at::Tensor, at::Tensor> construct_indexer_coarse_screen_output_tensor
   return std::tuple<at::Tensor, at::Tensor>(candidates_out, aslk_out);
 }
 
-std::tuple<at::Tensor, at::Tensor> npu_indexer_coarse_screen(const at::Tensor& q_bar, const at::Tensor& w_bar,
-                                                             const at::Tensor& key,
-                                                             const c10::optional<at::Tensor>& actual_seq_lengths_query,
-                                                             const c10::optional<at::Tensor>& actual_seq_lengths_key,
-                                                             const at::Tensor& block_table, int64_t coarse_count,
-                                                             int64_t has_window, int64_t group_size, int64_t proxy_mode,
-                                                             bool is_modify_localwindow) {
+std::tuple<at::Tensor, at::Tensor> npu_indexer_coarse_screen(
+    const at::Tensor& q_bar, const at::Tensor& w_bar, const at::Tensor& key,
+    const c10::optional<at::Tensor>& actual_seq_lengths_query, const c10::optional<at::Tensor>& actual_seq_lengths_key,
+    const at::Tensor& block_table, int64_t coarse_count, int64_t has_window, int64_t group_size, int64_t proxy_mode,
+    bool is_modify_localwindow, c10::optional<int64_t> prefill_min_prefix_length) {
   TORCH_CHECK(q_bar.numel() > 0, "Tensor q_bar is empty.");
   TORCH_CHECK(w_bar.numel() > 0, "Tensor w_bar is empty.");
   TORCH_CHECK(key.numel() > 0, "Tensor key is empty.");
@@ -61,6 +61,13 @@ std::tuple<at::Tensor, at::Tensor> npu_indexer_coarse_screen(const at::Tensor& q
               "actual_seq_lengths_query must be a vector of cumulative raw query lengths.");
   TORCH_CHECK(actual_seq_lengths_key.has_value() && actual_seq_lengths_key->dim() == 1,
               "actual_seq_lengths_key must be a vector of visible key lengths.");
+  if (prefill_min_prefix_length.has_value()) {
+    TORCH_CHECK(has_window == 1, "has_window must be 1.");
+    return indexer_coarse_screen_v2(q_bar, w_bar, key, *actual_seq_lengths_query, *actual_seq_lengths_key, block_table,
+                                    coarse_count, group_size, proxy_mode, is_modify_localwindow,
+                                    *prefill_min_prefix_length);
+  }
+
   auto coarse_screen_output = construct_indexer_coarse_screen_output_tensor(
       actual_seq_lengths_query.value(), q_bar, coarse_count, has_window, proxy_mode, is_modify_localwindow);
   at::Tensor candidates_out = std::get<0>(coarse_screen_output);

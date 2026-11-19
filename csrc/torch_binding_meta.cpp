@@ -213,7 +213,7 @@ std::tuple<at::Tensor, at::Tensor> npu_indexer_coarse_screen_meta(
     const c10::optional<at::Tensor>& actual_seq_lengths_query,
     const c10::optional<at::Tensor>& actual_seq_lengths_key,
     const at::Tensor& block_table, int64_t coarse_count, int64_t has_window,
-    int64_t group_size, int64_t proxy_mode, bool is_modify_localwindow)
+    int64_t group_size, int64_t proxy_mode, bool is_modify_localwindow, c10::optional<int64_t> prefill_min_prefix_length)
 {
     TORCH_CHECK(actual_seq_lengths_query.has_value(), "actual_seq_lengths_query is required.");
     TORCH_CHECK(actual_seq_lengths_key.has_value(), "actual_seq_lengths_key is required.");
@@ -223,7 +223,10 @@ std::tuple<at::Tensor, at::Tensor> npu_indexer_coarse_screen_meta(
     TORCH_CHECK(proxy_mode == 0 || proxy_mode == 1, "proxy_mode must be 0 or 1.");
     TORCH_CHECK(!is_modify_localwindow || proxy_mode == 1,
                 "is_modify_localwindow requires raw queries (proxy_mode=1).");
-    const auto rows = is_modify_localwindow ? q_bar.sym_size(0) : actual_seq_lengths_query->sym_size(0);
+    auto rows = actual_seq_lengths_query->sym_size(0);
+    if (is_modify_localwindow || prefill_min_prefix_length.has_value()) {
+        rows = proxy_mode == 1 && !is_modify_localwindow ? q_bar.sym_size(0) / group_size : q_bar.sym_size(0);
+    }
     const auto options = q_bar.options().dtype(at::kInt);
     return {at::empty_symint({rows, c10::SymInt(coarse_count)}, options), at::empty_symint({rows}, options)};
 }
