@@ -471,6 +471,9 @@ ge::graphStatus PivotCoarseSelectInfoParser::GetS1Size()
 {
     if (qLayout_ == CoarseDataLayout::BSND) {
         s1Size_ = opParamInfo_.query.shape->GetStorageShape().GetDim(1);
+    } else if (opParamInfo_.groupSize != 0) {
+        // Coarse preprocessing validates raw cumulative ends against the physical T dimension.
+        s1Size_ = opParamInfo_.query.shape->GetStorageShape().GetDim(0);
     }
     return ge::GRAPH_SUCCESS;
 }

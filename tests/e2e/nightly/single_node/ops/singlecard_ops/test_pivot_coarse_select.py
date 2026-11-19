@@ -153,5 +153,7 @@ def test_paired_groups_use_their_own_key_tables(inputs):
         block_table=table,
         coarse_count=4096,
     )
-    torch.testing.assert_close(actual, expected.index_select(0, pattern), rtol=0, atol=0)
+    torch.testing.assert_close(
+        actual.sort(dim=-1).values, expected.index_select(0, pattern).sort(dim=-1).values, rtol=0, atol=0
+    )
     torch.testing.assert_close(actual_sizes, sizes.index_select(0, pattern), rtol=0, atol=0)

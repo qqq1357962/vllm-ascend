@@ -100,6 +100,7 @@ private:
 
     // MrgSort accepts four independently sorted runs per instruction.
     static constexpr uint32_t MERGE_FAN_IN = PivotCoarseSelectVec::MRG_BLOCK_4;
+    static constexpr uint32_t SORT_ELEMENTS_PER_REPEAT = 32; // Sort encodes a run of 32 elements per repeat.
     static constexpr uint32_t LD_STATUS = 0;
     static constexpr uint32_t LD_ROW_END = 4;
     static constexpr uint32_t LD_ROW = 5;
@@ -285,7 +286,7 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
 {
     auto tileRuns = sortedTileBuf_.Get<float>();
     const uint32_t tilePairs = s2BaseSize_ * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM;
-    Sort<float, true>(tileRuns[pendingTiles_ * tilePairs], scores, ids, sortScratch, s2BaseSize_ / PivotCoarseSelectVec::BLOCK_BYTES);
+    Sort<float, true>(tileRuns[pendingTiles_ * tilePairs], scores, ids, sortScratch, s2BaseSize_ / SORT_ELEMENTS_PER_REPEAT);
     PipeBarrier<PIPE_V>();
     ++pendingTiles_;
     if (pendingTiles_ != MERGE_FAN_IN && !lastTile) {
