@@ -40,6 +40,7 @@
 #include "gmm/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_torch_adpt.h"
 #include "attention/lightning_indexer/lightning_indexer_torch_adpt.h"
 #include "attention/pivot_lightning_indexer/pivot_lightning_indexer_torch_adpt.h"
+#include "attention/indexer_coarse_screen/indexer_coarse_screen_torch_adpt.h"
 #include "moe/moe_gating_top_k/moe_gating_top_k_torch_adpt.h"
 #include "attention/sparse_flash_attention/sparse_flash_attention_torch_adpt.h"
 #include "attention/sparse_flash_mla/sparse_flash_mla_torch_adpt.h"
@@ -3138,6 +3139,26 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         ") -> (Tensor sparse_indices, Tensor sparse_values)"
     );
     ops.impl("npu_pivot_lightning_indexer", torch::kPrivateUse1, &vllm_ascend::npu_pivot_lightning_indexer);
+
+    // Supplying prefill_min_prefix_length selects LIv2 with request-major metadata.
+    // Each request must have the same raw query length, divisible by group_size.
+    // Pass cumulative raw query ends, total visible KV lengths, and one block-table row per request.
+    // The prefix hint is a host lower bound on min(total KV length - raw query length).
+    // It excludes the query tokens and must be valid for every request.
+    // Each KV length must fit its block-table row. proxy_mode=0 takes one pooled row per group,
+    // while proxy_mode=1 takes raw rows and is required for per-token window updates.
+    ops.def(
+        "npu_indexer_coarse_screen("
+            "Tensor q_bar, Tensor w_bar, Tensor key, "
+            "*, "
+            "Tensor? actual_seq_lengths_query=None, "
+            "Tensor? actual_seq_lengths_key=None, "
+            "Tensor block_table, "
+            "int coarse_count=4096, int has_window=1, int group_size=4, "
+            "int proxy_mode=0, bool is_modify_localwindow=False, int? prefill_min_prefix_length=None"
+        ") -> (Tensor candidates, Tensor aslk)"
+    );
+    ops.impl("npu_indexer_coarse_screen", torch::kPrivateUse1, &vllm_ascend::npu_indexer_coarse_screen);
 
     // k2q_csr: q2k -> k2q CSR (Meta/Hist/RowPrefix/TilePrefix/Scatter)
     ops.def(
