@@ -59,8 +59,7 @@ public:
                                 __gm__ uint8_t *blockTable, __gm__ uint8_t *sparseIndices, __gm__ uint8_t *sparseValues,
                                 __gm__ uint8_t *workspace, const PivotCoarseSelectTilingData *__restrict tiling, TPipe *tPipe,
                                 __gm__ const PivotGroup *pivotGroups = nullptr,
-                                __gm__ const uint32_t *sharedPairs = nullptr,
-                                __gm__ const uint32_t *sharedPacks = nullptr);
+                                __gm__ const uint32_t *sharedPairs = nullptr);
     __aicore__ inline void Process();
 
     // =================================类型定义区=================================
@@ -129,7 +128,6 @@ protected:
     uint32_t usedCoreNum = 0U;
     bool pairCoarseRows = false;
     __gm__ const uint32_t *sharedCoarsePairs = nullptr;
-    __gm__ const uint32_t *sharedCoarsePacks = nullptr;
 
     PivotCoarseSelectCommon::ConstInfo constInfo{};
     TempLoopInfo tempLoopInfo{};
@@ -147,7 +145,6 @@ protected:
     // ================================Process functions================================
     __aicore__ inline void ProcessMain();
     __aicore__ inline void ProcessCoarsePairs();
-    __aicore__ inline void ProcessCoarseRows(uint32_t first, uint32_t count, bool shared, uint32_t &loop);
     __aicore__ inline void SetPairRunInfo(PivotCoarseSelectCommon::RunInfo &info, uint32_t row,
         uint32_t s2, uint32_t length, uint32_t lane, uint32_t loop);
     __aicore__ inline void ProcessBaseBlock(uint32_t loop, uint64_t s2LoopIdx, PivotCoarseSelectCommon::RunInfo &runInfo);
@@ -423,8 +420,7 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
                                             __gm__ uint8_t *sparseValues,
                                             __gm__ uint8_t *workspace, const PivotCoarseSelectTilingData *__restrict tiling,
                                             TPipe *tPipe, __gm__ const PivotGroup *pivotGroups,
-                                            __gm__ const uint32_t *sharedPairs,
-                                            __gm__ const uint32_t *sharedPacks)
+                                            __gm__ const uint32_t *sharedPairs)
 {
     if ASCEND_IS_AIV {
         tmpBlockIdx = GetBlockIdx(); // vec:0-47
@@ -437,7 +433,6 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
     InitTilingData(tiling);
     constInfo.pivotGroups = pivotGroups;
     sharedCoarsePairs = sharedPairs;
-    sharedCoarsePacks = sharedPacks;
     InitActualSeqLen(actualSeqLengthsQ, actualSeqLengths);
 
     // Keep enough independent row pairs to occupy the device before selecting this schedule.
@@ -446,9 +441,7 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
     constInfo.splitWideRows = constInfo.batchWideMerge && tiling->groupSize != 0 &&
         !tiling->modifyLocalwindow && !pairCoarseRows;
     if (pairCoarseRows) {
-        const uint32_t rows = sharedPacks != nullptr ? COARSE_PACK_ROWS : COARSE_VECTOR_LANES;
-        constInfo.wideAccumulators = rows / COARSE_VECTOR_LANES;
-        constInfo.mBaseSizeAlign = rows * PivotCoarseSelectCommon::Align<uint32_t>(constInfo.gSize, BLOCK_CUBE_SIZE);
+        constInfo.mBaseSizeAlign = 2 * PivotCoarseSelectCommon::Align<uint32_t>(constInfo.gSize, BLOCK_CUBE_SIZE);
     } else {
         SplitCore(aiCoreIdx, usedCoreNum, splitCoreInfo);
     }
@@ -681,64 +674,7 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::SetPairRunInfo(PivotCoarseS
     info.isAllLoopEnd = false;
     info.pairedRows = true;
     info.vectorLane = lane;
-    info.scoreOffset = lane * PivotCoarseSelectCommon::Align<uint32_t>(constInfo.gSize, BLOCK_CUBE_SIZE) *
-        constInfo.s2BaseSize;
-}
-
-template <typename LIT>
-__aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessCoarseRows(uint32_t first, uint32_t count, bool shared,
-    uint32_t &loop)
-{
-    uint32_t lengths[COARSE_PACK_ROWS];
-    uint32_t maxLen = 0;
-    uint32_t keyRow = first;
-    for (uint32_t i = 0; i < count; ++i) {
-        lengths[i] = actualSeqLengthsGm.GetValue(first + i);
-        if (lengths[i] > maxLen) {
-            maxLen = lengths[i];
-            keyRow = first + i;
-        }
-    }
-    const uint32_t steps = CeilDiv(maxLen, constInfo.s2BaseSize);
-    const uint32_t vectorLane = tmpBlockIdx % COARSE_VECTOR_LANES;
-    for (uint32_t s2 = 0; s2 < steps; ++s2, ++loop) {
-        const uint32_t offset = s2 * constInfo.s2BaseSize;
-        if ASCEND_IS_AIC {
-            CrossCoreWaitFlag(constInfo.syncV1C1);
-            PivotCoarseSelectCommon::RunInfo info;
-            if (shared) {
-                SetPairRunInfo(info, first, s2, maxLen, 0, loop);
-                info.bIdx = keyRow;
-                info.actMBaseSize = count * constInfo.gSize;
-                matmulService.ComputeMm1(info);
-            } else {
-                for (uint32_t i = 0; i < count; ++i) {
-                    if (offset < lengths[i]) {
-                        SetPairRunInfo(info, first + i, s2, lengths[i], i, loop);
-                        matmulService.ComputeMm1(info);
-                    }
-                }
-            }
-            CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_FIX>(constInfo.syncC1V1);
-        } else {
-            CrossCoreWaitFlag(constInfo.syncC1V1);
-            for (uint32_t i = vectorLane; i < count; i += COARSE_VECTOR_LANES) {
-                if (offset < lengths[i]) {
-                    PivotCoarseSelectCommon::RunInfo info;
-                    SetPairRunInfo(info, first + i, s2, lengths[i], i, loop);
-                    info.accumulatorSlot = i / COARSE_VECTOR_LANES;
-                    if (shared) {
-                        const uint32_t copied = Min(maxLen - offset, constInfo.s2BaseSize);
-                        info.actualSingleProcessSInnerSizeAlign = PivotCoarseSelectCommon::Align(
-                            copied, PivotCoarseSelectCommon::ConstInfo::BUFFER_SIZE_BYTE_32B);
-                        info.scoreOffset = i * constInfo.gSize * info.actualSingleProcessSInnerSizeAlign;
-                    }
-                    vectorService.ProcessVec(info);
-                }
-            }
-            CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
-        }
-    }
+    info.scoreOffset = lane * (constInfo.mBaseSizeAlign / 2) * constInfo.s2BaseSize;
 }
 
 template <typename LIT>
@@ -755,23 +691,57 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessCoarsePairs()
         matmulService.AllocEventID();
     }
 
-    const uint32_t rowsPerBlock = sharedCoarsePacks != nullptr ? COARSE_PACK_ROWS : COARSE_VECTOR_LANES;
-    const uint32_t rows = constInfo.batchSize;
-    const uint32_t blocks = CeilDiv(rows, rowsPerBlock);
-    const uint32_t average = blocks / usedCoreNum;
-    const uint32_t remainder = blocks % usedCoreNum;
-    const uint32_t begin = aiCoreIdx * average + Min(aiCoreIdx, remainder);
-    const uint32_t end = begin + average + (aiCoreIdx < remainder ? 1 : 0);
+    const uint32_t totalPairs = CeilDiv(static_cast<uint32_t>(constInfo.batchSize), 2U);
+    const uint32_t pairsPerCore = totalPairs / usedCoreNum;
+    const uint32_t extraPairs = totalPairs % usedCoreNum;
+    const uint32_t pairBegin = aiCoreIdx * pairsPerCore + Min(aiCoreIdx, extraPairs);
+    const uint32_t pairEnd = pairBegin + pairsPerCore + (aiCoreIdx < extraPairs ? 1 : 0);
+    const uint32_t vectorLane = tmpBlockIdx % 2;
     uint32_t loop = 0;
-    for (uint32_t block = begin; block < end; ++block) {
-        const uint32_t first = block * rowsPerBlock;
-        if (sharedCoarsePacks != nullptr && sharedCoarsePacks[block] != 0) {
-            ProcessCoarseRows(first, COARSE_PACK_ROWS, true, loop);
-        } else {
-            const uint32_t limit = Min(first + rowsPerBlock, rows);
-            for (uint32_t row = first; row < limit; row += COARSE_VECTOR_LANES) {
-                const bool shared = sharedCoarsePairs != nullptr && sharedCoarsePairs[row / COARSE_VECTOR_LANES] != 0;
-                ProcessCoarseRows(row, Min(limit - row, COARSE_VECTOR_LANES), shared, loop);
+    for (uint32_t pair = pairBegin; pair < pairEnd; ++pair) {
+        const uint32_t first = 2 * pair;
+        const uint32_t second = first + 1;
+        const uint32_t k0 = actualSeqLengthsGm.GetValue(first);
+        const uint32_t k1 = second < constInfo.batchSize ? actualSeqLengthsGm.GetValue(second) : 0;
+        const uint32_t maxLen = Max(k0, k1);
+        const uint32_t steps = CeilDiv(maxLen, constInfo.s2BaseSize);
+        const bool shared = sharedCoarsePairs != nullptr && sharedCoarsePairs[pair] != 0;
+        for (uint32_t s2 = 0; s2 < steps; ++s2, ++loop) {
+            const uint32_t offset = s2 * constInfo.s2BaseSize;
+            if ASCEND_IS_AIC {
+                CrossCoreWaitFlag(constInfo.syncV1C1);
+                PivotCoarseSelectCommon::RunInfo info;
+                if (shared) {
+                    SetPairRunInfo(info, first, s2, maxLen, 0, loop);
+                    info.bIdx = k0 >= k1 ? first : second;
+                    info.actMBaseSize = 2 * constInfo.gSize;
+                    matmulService.ComputeMm1(info);
+                } else {
+                    if (offset < k0) {
+                        SetPairRunInfo(info, first, s2, k0, 0, loop);
+                        matmulService.ComputeMm1(info);
+                    }
+                    if (offset < k1) {
+                        SetPairRunInfo(info, second, s2, k1, 1, loop);
+                        matmulService.ComputeMm1(info);
+                    }
+                }
+                CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_FIX>(constInfo.syncC1V1);
+            } else {
+                CrossCoreWaitFlag(constInfo.syncC1V1);
+                const uint32_t length = vectorLane == 0 ? k0 : k1;
+                if (offset < length) {
+                    PivotCoarseSelectCommon::RunInfo info;
+                    SetPairRunInfo(info, first + vectorLane, s2, length, vectorLane, loop);
+                    if (shared) {
+                        const uint32_t copied = Min(maxLen - offset, constInfo.s2BaseSize);
+                        info.actualSingleProcessSInnerSizeAlign = PivotCoarseSelectCommon::Align(
+                            copied, PivotCoarseSelectCommon::ConstInfo::BUFFER_SIZE_BYTE_32B);
+                        info.scoreOffset = vectorLane * constInfo.gSize * info.actualSingleProcessSInnerSizeAlign;
+                    }
+                    vectorService.ProcessVec(info);
+                }
+                CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
             }
         }
     }

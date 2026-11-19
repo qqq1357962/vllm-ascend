@@ -68,7 +68,6 @@ struct RunInfo {
     bool pairedRows = false;
     uint32_t vectorLane = 0;
     uint32_t scoreOffset = 0;
-    uint32_t accumulatorSlot = 0;
 };
 
 struct ConstInfo {
@@ -128,7 +127,6 @@ struct ConstInfo {
     bool isSparseCountOver2K = false; //sparseCount小于等于2048为false
     bool batchWideMerge = false;
     bool splitWideRows = false;
-    uint32_t wideAccumulators = 1;
     bool isLDOpen = false;
     bool returnValueFlag = false;
     bool splitMFlag = false;

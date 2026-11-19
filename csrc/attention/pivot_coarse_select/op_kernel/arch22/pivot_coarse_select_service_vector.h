@@ -106,12 +106,11 @@ private:
     static constexpr uint32_t LD_ROW = 5;
     static constexpr uint32_t LD_DST = 8;
     static constexpr int64_t LD_SLOT_READY = 1;
-    uint32_t pendingTiles_[COARSE_PACK_ROWS / COARSE_VECTOR_LANES]{};
-    uint32_t mergeFanIn_ = MERGE_FAN_IN;
+    uint32_t pendingTiles_ = 0;
     __aicore__ inline void LoadScaleTile(int32_t headTile, int64_t rowOffset, int64_t weightOffset,
         int32_t scoreStride, int32_t mmUbStride);
     __aicore__ inline void AccumulateWideTile(const LocalTensor<float> &scores,
-        const LocalTensor<uint32_t> &ids, LocalTensor<float> &sortScratch, bool lastTile, uint32_t slot);
+        const LocalTensor<uint32_t> &ids, LocalTensor<float> &sortScratch, bool lastTile);
 
     // tmp buff for LD
     TBuf<> ldToBeMrgBuf_;
@@ -156,15 +155,13 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::InitBuffers(TPipe *p
     pipe->InitBuffer(outQueue_, 1, outNeedBufSize);                                            // 32KB  extract
     // 68KB 在搬运cube核计算得到的结果和weight时，分成两块34KB，用于db；在mrgsort时，用作临时UB
     pipe->InitBuffer(tmpBuf_, (groupInner_ * s2BaseSize_ + s2BaseSize_) * 2 * sizeof(float));
-    const uint32_t accumulatorRows = Max<uint32_t>(CeilDiv(s1BaseSize_, 2), constInfo_.wideAccumulators);
-    pipe->InitBuffer(sortOutBuf_, accumulatorRows * virTopK * 2 * sizeof(float));    // 64KB
+    pipe->InitBuffer(sortOutBuf_, CeilDiv(s1BaseSize_, 2) * virTopK * 2 * sizeof(float));    // 64KB
     pipe->InitBuffer(indexBuf_, s2BaseSize_ * sizeof(int32_t));                                // 2KB
     pipe->InitBuffer(reduceOutBuf_, s2BaseSize_ * 2 * sizeof(float));                          // 4KB
     pipe->InitBuffer(brcBuf_, groupInner_ * 8 * sizeof(float));
     pipe->InitBuffer(paramBuf_, LD_PARAM_NUM * sizeof(int64_t));
 
     if (constInfo_.batchWideMerge) {
-        mergeFanIn_ = MERGE_FAN_IN / constInfo_.wideAccumulators;
         pipe->InitBuffer(sortedTileBuf_, MERGE_FAN_IN * s2BaseSize_ * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM * sizeof(float));
     }
 
@@ -305,22 +302,20 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::LoadScaleTile(int32_
 template <typename LIT>
 __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
     const LocalTensor<float> &scores, const LocalTensor<uint32_t> &ids,
-    LocalTensor<float> &sortScratch, bool lastTile, uint32_t slot)
+    LocalTensor<float> &sortScratch, bool lastTile)
 {
+    auto tileRuns = sortedTileBuf_.Get<float>();
     const uint32_t tilePairs = s2BaseSize_ * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM;
-    auto tileRuns = sortedTileBuf_.Get<float>()[slot * mergeFanIn_ * tilePairs];
-    auto state = globalTopkUb_[slot * virTopK * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM];
-    uint32_t &pending = pendingTiles_[slot];
-    Sort<float, true>(tileRuns[pending * tilePairs], scores, ids, sortScratch, s2BaseSize_ / SORT_ELEMENTS_PER_REPEAT);
+    Sort<float, true>(tileRuns[pendingTiles_ * tilePairs], scores, ids, sortScratch, s2BaseSize_ / SORT_ELEMENTS_PER_REPEAT);
     PipeBarrier<PIPE_V>();
-    ++pending;
-    if (pending != mergeFanIn_ && !lastTile) {
+    ++pendingTiles_;
+    if (pendingTiles_ != MERGE_FAN_IN && !lastTile) {
         return;
     }
 
     auto incoming = tileRuns;
-    if (pending > 1) {
-        PivotCoarseSelectVec::MrgBasicBlock(sortScratch, tileRuns, pending, s2BaseSize_);
+    if (pendingTiles_ > 1) {
+        PivotCoarseSelectVec::MrgBasicBlock(sortScratch, tileRuns, pendingTiles_, s2BaseSize_);
         PipeBarrier<PIPE_V>();
         incoming = sortScratch;
     }
@@ -329,9 +324,9 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
     const uint32_t granularity = VEC_REPEAT_BYTES / sizeof(float);
     constexpr uint32_t pairs = PivotCoarseSelectVec::VALUE_AND_INDEX_NUM;
     SetWaitFlag<HardEvent::V_S>(HardEvent::V_S);
-    const float threshold = state.GetValue((virTopK - 1) * pairs);
+    const float threshold = globalTopkUb_.GetValue((virTopK - 1) * pairs);
     uint32_t low = 0;
-    uint32_t high = pending * s2BaseSize_ / granularity;
+    uint32_t high = pendingTiles_ * s2BaseSize_ / granularity;
     while (low < high) {
         const uint32_t middle = low + (high - low) / 2;
         if (incoming.GetValue(middle * granularity * pairs) < threshold) {
@@ -341,9 +336,9 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
         }
     }
     if (low != 0) {
-        PivotCoarseSelectVec::MergeSort(state, virTopK, incoming, low * granularity, tmpUb_);
+        PivotCoarseSelectVec::MergeSort(globalTopkUb_, virTopK, incoming, low * granularity, tmpUb_);
     }
-    pending = 0;
+    pendingTiles_ = 0;
 }
 
 template <typename LIT>
@@ -376,16 +371,11 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
     int32_t outerG = CeilDiv(gSize_, groupInner_);
 
     // 非首个基本块, M(S1)轴发生切换需要初始化
-    if (info.pairedRows && info.s2Idx == 0) {
-        const uint32_t state = info.accumulatorSlot * virTopK * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM;
-        InitSortOutBuf(globalTopkUb_[state], virTopK * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM);
-        pendingTiles_[info.accumulatorSlot] = 0;
-        blockS2StartIdx_ = 0;
-    } else if (info.loop != 0 && info.s2Idx == 0) {
+    if (info.loop != 0 && info.s2Idx == 0) {
         // globalTopkUb_ value,index=-inf,-1
         InitSortOutBuf(globalTopkUb_, CeilDiv(s1BaseSize_, 2) * virTopK * 2);
         blockS2StartIdx_ = 0;
-        pendingTiles_[0] = 0;
+        pendingTiles_ = 0;
     } else if (info.loop == 0) {
         blockS2StartIdx_ = info.s2Idx;
     }
@@ -471,7 +461,7 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
             LocalTensor<float> tmpSortBuf = outQueue_.AllocTensor<float>();
             if (constInfo_.batchWideMerge) {
                 AccumulateWideTile(sortScoreUb, sortIndiceUbInt.template ReinterpretCast<uint32_t>(),
-                    tmpSortBuf, isS2End || info.isLastS2InnerLoop, info.accumulatorSlot);
+                    tmpSortBuf, isS2End || info.isLastS2InnerLoop);
             } else if (info.actS1Size > 4 || constInfo_.isSparseCountOver2K) {
                 // info.actS1Size > 4 则单个vector核内处理的 s1>2，缓存方案无法处理
                 PivotCoarseSelectVec::SortAll(reduceOutBuff, tmpSortBuf,
@@ -529,9 +519,8 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
                 for (int64_t i = 0; i < copyNum; i++) {
                     LocalTensor<float> outValueUb = outQueue_.AllocTensor<float>();
                     LocalTensor<uint32_t> outIdxUb = outValueUb[offset].template ReinterpretCast<uint32_t>();
-                    const uint32_t slot = info.pairedRows ? info.accumulatorSlot : innerS1Idx;
                     Extract(outValueUb, outIdxUb,
-                     globalTopkUb_[slot * virTopK * 2 + 2 * i * offset], (offset /32));
+                     globalTopkUb_[innerS1Idx * virTopK * 2 + 2 * i * offset], (offset /32));
 
                     LocalTensor<K_T> valueULocal1 = outValueUb.template ReinterpretCast<K_T>();
                     if (constInfo_.returnValue) {
