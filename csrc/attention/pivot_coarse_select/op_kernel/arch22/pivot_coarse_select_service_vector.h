@@ -352,7 +352,25 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
         PipeBarrier<PIPE_V>();
         incoming = sortScratch;
     }
-    PivotCoarseSelectVec::MergeSort(globalTopkUb_, virTopK, incoming, pendingTiles_ * s2BaseSize_, tmpUb_);
+    // An incoming run is sorted. Drop suffix runs whose highest score is below the running boundary.
+    // Retaining the entire boundary block preserves tie behavior across merges.
+    const uint32_t granularity = VEC_REPEAT_BYTES / sizeof(float);
+    constexpr uint32_t pairs = PivotCoarseSelectVec::VALUE_AND_INDEX_NUM;
+    SetWaitFlag<HardEvent::V_S>(HardEvent::V_S);
+    const float threshold = globalTopkUb_.GetValue((virTopK - 1) * pairs);
+    uint32_t low = 0;
+    uint32_t high = pendingTiles_ * s2BaseSize_ / granularity;
+    while (low < high) {
+        const uint32_t middle = low + (high - low) / 2;
+        if (incoming.GetValue(middle * granularity * pairs) < threshold) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    if (low != 0) {
+        PivotCoarseSelectVec::MergeSort(globalTopkUb_, virTopK, incoming, low * granularity, tmpUb_);
+    }
     pendingTiles_ = 0;
 }
 
