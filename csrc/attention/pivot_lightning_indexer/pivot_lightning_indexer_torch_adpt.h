@@ -92,7 +92,7 @@ std::tuple<at::Tensor, at::Tensor> npu_pivot_lightning_indexer(
     char* query_layout_ptr = const_cast<char*>(query_layout_str.c_str());
     char* key_layout_ptr = const_cast<char*>(key_layout_str.c_str());
 
-    EXEC_NPU_CMD(aclnnPivotLightningIndexer, query, key, weights,
+    EXEC_NPU_CMD(aclnnPivotCoarseSelect, query, key, weights,
                  actual_seq_lengths_query, actual_seq_lengths_key, block_table,
                  query_layout_ptr, key_layout_ptr, sparse_count, sparse_mode,
                  pre_tokens, next_tokens, return_value, sparse_indices_out,

@@ -308,7 +308,12 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
     uint32_t ldS1Offset = (blockId_ % 2 == 0) ? s1BaseSize_ / 2 - cuS1ProcNumPerAiv : 0;
     for (int innerS1Idx = 0; innerS1Idx < cuS1ProcNumPerAiv; innerS1Idx++) {
         if (constInfo_.attenMaskFlag) {
-            cuRealAcSeq += 1;
+            if constexpr (LIT::pivotReuse) {
+                uint64_t row = info.indiceOutOffset / constInfo_.sparseCount + cuS1BeginIdxPerAiv + innerS1Idx;
+                cuRealAcSeq = constInfo_.pivotGroups[row].visibleKeys;
+            } else {
+                cuRealAcSeq += 1;
+            }
         }
         int32_t cuS2Len = cuBaseS2Idx + s2BaseSize_ >= cuRealAcSeq ? cuRealAcSeq - cuBaseS2Idx : s2BaseSize_;
         int32_t cuS1Idx = cuS1BeginIdxPerAiv + innerS1Idx;
@@ -441,11 +446,11 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
 
                     PivotCoarseSelectVec::CopyOut(indiceOutGm[info.indiceOutOffset + cuS1Idx *
                                                          constInfo_.sparseCount + i * offset],
-                                        idxULocal1, copyLen);
+                                         idxULocal1, copyLen);
                     if (constInfo_.returnValue) {
                         PivotCoarseSelectVec::CopyOut(valueOutGm[info.indiceOutOffset + cuS1Idx *
-                                                             constInfo_.sparseCount + i * offset],
-                                        valueULocal1, copyLen);
+                                                            constInfo_.sparseCount + i * offset],
+                                             valueULocal1, copyLen);
                     }
                     outQueue_.FreeTensor(outValueUb);
                 }
@@ -532,7 +537,6 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessLD()
     int32_t curCubeId = blockId_ / 2;
     int32_t tmpCubeId = curCubeId;
 
-    int64_t s2ActSeq;
     int64_t s2Start;
     int64_t s2End;
     int64_t isS2End;

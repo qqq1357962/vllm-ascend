@@ -14,6 +14,8 @@
  */
 #ifndef PIVOT_COARSE_SELECT_COMMON_H
 #define PIVOT_COARSE_SELECT_COMMON_H
+#include "pivot_coarse_select_pivot_geometry.h"
+
 using namespace AscendC;
 namespace PivotCoarseSelectCommon {
 
@@ -28,6 +30,7 @@ template <typename Q_T, typename K_T, typename OUT_T, const bool PAGE_ATTENTION 
           LI_LAYOUT LAYOUT_T = LI_LAYOUT::BSND, LI_LAYOUT K_LAYOUT_T = LI_LAYOUT::PA_BSND,
           bool DT_W_FLAG = false, typename... Args>
 struct LIType {
+    static constexpr bool pivotReuse = false;
     static constexpr bool weightsTypeFlag = DT_W_FLAG;   // weight的dtype是否为FP32
     using queryType = Q_T;
     using keyType = K_T;
@@ -65,6 +68,7 @@ struct RunInfo {
 };
 
 struct ConstInfo {
+    __gm__ const PivotGroup *pivotGroups = nullptr;
     // CUBE与VEC核间同步的模式
     static constexpr uint32_t FIA_SYNC_MODE2 = 2;
     static constexpr uint32_t QLI_SYNC_MODE4 = 4;

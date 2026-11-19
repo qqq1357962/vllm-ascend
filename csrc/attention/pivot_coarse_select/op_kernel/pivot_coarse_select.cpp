@@ -18,15 +18,29 @@
 #include "pivot_coarse_select_template_tiling_key.h"
 
 #include "arch22/pivot_coarse_select_kernel.h"
+#if (__CCE_AICORE__ == 220)
+#include "arch22/pivot_coarse_select_pivot_reuse.h"
+#endif
 
 using namespace PivotCoarseSelectKernelImpl;
+
+#if (__CCE_AICORE__ == 220)
+#define TRY_PIVOT_REUSE(...)                                                                                           \
+    if (TryPivotReuse<LIType<__VA_ARGS__>>(query, key, weights, actualSeqLengthsQ, actualSeqLengths, blocktable,        \
+            sparseIndices, sparseValues, user, tiling_data_in, tPipe)) {                                                \
+        break;                                                                                                         \
+    }
+#else
+#define TRY_PIVOT_REUSE(...)
+#endif
 
 #define INVOKE_LI_NO_KFC_OP_IMPL(templateClass, ...)                                                                   \
     do {                                                                                                               \
         templateClass<LIType<__VA_ARGS__>> op;                                                                         \
-        GET_TILING_DATA_WITH_STRUCT(PivotCoarseSelectTilingData, tiling_data_in, tiling);                                             \
-        const PivotCoarseSelectTilingData *__restrict tiling_data = &tiling_data_in;                                                  \
-        op.Init(query, key, weights, actualSeqLengthsQ, actualSeqLengths, blocktable, sparseIndices, sparseValues, user,             \
+        GET_TILING_DATA_WITH_STRUCT(PivotCoarseSelectTilingData, tiling_data_in, tiling);                                         \
+        TRY_PIVOT_REUSE(__VA_ARGS__);                                                                                  \
+        const PivotCoarseSelectTilingData *__restrict tiling_data = &tiling_data_in;                                              \
+        op.Init(query, key, weights, actualSeqLengthsQ, actualSeqLengths, blocktable, sparseIndices, sparseValues, user, \
                 tiling_data, &tPipe);                                                                                  \
         op.Process();                                                                                                  \
     } while (0)
@@ -41,15 +55,6 @@ __global__ __aicore__ void pivot_coarse_select(__gm__ uint8_t *query, __gm__ uin
     TPipe tPipe;
     __gm__ uint8_t *user = GetUserWorkspace(workspace);
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
-#if (__CCE_AICORE__ == 310) || (defined __DAV_310R6__) || (__CCE_AICORE__ == 200)
-    if (ORIG_DTYPE_QUERY == DT_BF16) {
-        INVOKE_LI_NO_KFC_OP_IMPL(PivotCoarseSelectKernel, bfloat16_t, bfloat16_t, int32_t,
-            PAGE_ATTENTION, LI_LAYOUT(LAYOUT_T), LI_LAYOUT(K_LAYOUT_T), DT_W_FLAG);
-    } else if (ORIG_DTYPE_QUERY == DT_FLOAT16) {
-        INVOKE_LI_NO_KFC_OP_IMPL(PivotCoarseSelectKernel, half, half, int32_t,
-            PAGE_ATTENTION, LI_LAYOUT(LAYOUT_T), LI_LAYOUT(K_LAYOUT_T), DT_W_FLAG);
-    }
-#else
     if constexpr (DT_Q == LI_TPL_FP16 && DT_K == LI_TPL_FP16 && DT_OUT == LI_TPL_INT32) {
         INVOKE_LI_NO_KFC_OP_IMPL(PivotCoarseSelectKernel, half, half, int32_t, PAGE_ATTENTION,
                                  LI_LAYOUT(LAYOUT_T), LI_LAYOUT(K_LAYOUT_T), DT_W_FLAG);
@@ -57,5 +62,4 @@ __global__ __aicore__ void pivot_coarse_select(__gm__ uint8_t *query, __gm__ uin
         INVOKE_LI_NO_KFC_OP_IMPL(PivotCoarseSelectKernel, bfloat16_t, bfloat16_t, int32_t, PAGE_ATTENTION,
                                  LI_LAYOUT(LAYOUT_T), LI_LAYOUT(K_LAYOUT_T), DT_W_FLAG);
     }
-#endif
 }

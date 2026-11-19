@@ -26,17 +26,17 @@
 
 namespace optiling {
 // ------------------公共定义--------------------------
-struct TilingRequiredParaInfo {
+struct PivotTilingRequiredParaInfo {
     const gert::CompileTimeTensorDesc *desc;
     const gert::StorageShape *shape;
 };
 
-struct TilingOptionalParaInfo {
+struct PivotTilingOptionalParaInfo {
     const gert::CompileTimeTensorDesc *desc;
     const gert::Tensor *tensor;
 };
 
-enum class DataLayout : uint32_t {
+enum class PivotDataLayout : uint32_t {
     BSND = 0,
     TND = 1,
     BnBsND = 2
@@ -94,18 +94,18 @@ END_TILING_DATA_DEF
 REGISTER_TILING_DATA_CLASS(PivotCoarseSelect, PivotCoarseSelectTilingData)
 
 // -----------算子CompileInfo定义-------------------
-struct PivotCoarseSelectCompileInfo {};
+struct PivotPivotCoarseSelectCompileInfo {};
 
 // -----------算子Tiling入参结构体定义---------------
-struct LiParaInfo {
-    TilingRequiredParaInfo query = {nullptr, nullptr};
-    TilingRequiredParaInfo key = {nullptr, nullptr};
-    TilingRequiredParaInfo weights = {nullptr, nullptr};
-    TilingOptionalParaInfo actualSeqLengthsQ = {nullptr, nullptr};
-    TilingOptionalParaInfo actualSeqLengths = {nullptr, nullptr};
-    TilingOptionalParaInfo blockTable = {nullptr, nullptr};
-    TilingRequiredParaInfo attenOut = {nullptr, nullptr};
-    TilingRequiredParaInfo valuesOut = {nullptr, nullptr};
+struct PivotLIParaInfo {
+    PivotTilingRequiredParaInfo query = {nullptr, nullptr};
+    PivotTilingRequiredParaInfo key = {nullptr, nullptr};
+    PivotTilingRequiredParaInfo weights = {nullptr, nullptr};
+    PivotTilingOptionalParaInfo actualSeqLengthsQ = {nullptr, nullptr};
+    PivotTilingOptionalParaInfo actualSeqLengths = {nullptr, nullptr};
+    PivotTilingOptionalParaInfo blockTable = {nullptr, nullptr};
+    PivotTilingRequiredParaInfo attenOut = {nullptr, nullptr};
+    PivotTilingRequiredParaInfo valuesOut = {nullptr, nullptr};
 
     const char *layOut = nullptr;
     const char *layOutKey = nullptr;
@@ -118,11 +118,11 @@ struct LiParaInfo {
 };
 
 // -----------算子Tiling入参信息类---------------
-class PivotCoarseSelectTilingInfo {
+class PivotPivotCoarseSelectTilingInfo {
 public:
     const char *opName = nullptr;
     fe::PlatFormInfos *platformInfo = nullptr;
-    LiParaInfo opParamInfo;
+    PivotLIParaInfo opParamInfo;
     // Base Param
     platform_ascendc::SocVersion socVersion = platform_ascendc::SocVersion::ASCEND910B;
     uint32_t bSize = 0;
@@ -149,17 +149,17 @@ public:
     ge::DataType weightsType = ge::DT_FLOAT16;
     ge::DataType outputType = ge::DT_INT32;
     // Layout
-    DataLayout inputQLayout = DataLayout::BSND;
-    DataLayout inputKLayout = DataLayout::BnBsND;
+    PivotDataLayout inputQLayout = PivotDataLayout::BSND;
+    PivotDataLayout inputKLayout = PivotDataLayout::BnBsND;
 };
 
 // -----------算子Tiling入参信息解析及Check类---------------
-class PivotCoarseSelectInfoParser {
+class PivotPivotCoarseSelectInfoParser {
 public:
-    explicit PivotCoarseSelectInfoParser(gert::TilingContext *context) : context_(context)
+    explicit PivotPivotCoarseSelectInfoParser(gert::TilingContext *context) : context_(context)
     {
     }
-    ~PivotCoarseSelectInfoParser() = default;
+    ~PivotPivotCoarseSelectInfoParser() = default;
 
     ge::graphStatus CheckRequiredInOutExistence() const;
     ge::graphStatus CheckRequiredAttrExistence() const;
@@ -192,14 +192,14 @@ public:
     ge::graphStatus GetGSize();
     ge::graphStatus GetAttenMaskInfo();
     ge::graphStatus GetActualSeqInfo();
-    void GenerateInfo(PivotCoarseSelectTilingInfo &liInfo);
-    ge::graphStatus ParseAndCheck(PivotCoarseSelectTilingInfo &liInfo);
+    void GenerateInfo(PivotPivotCoarseSelectTilingInfo &liInfo);
+    ge::graphStatus ParseAndCheck(PivotPivotCoarseSelectTilingInfo &liInfo);
 
 public:
     gert::TilingContext *context_ = nullptr;
     const char *opName_;
     fe::PlatFormInfos *platformInfo_;
-    LiParaInfo opParamInfo_;
+    PivotLIParaInfo opParamInfo_;
 
     // BaseParams
     uint32_t bSize_ = 0;
@@ -210,8 +210,8 @@ public:
     int64_t s2Size_ = 0;
     uint32_t headDim_ = 0;
     // Layout
-    DataLayout qLayout_ = DataLayout::BSND;
-    DataLayout kLayout_ = DataLayout::BnBsND;
+    PivotDataLayout qLayout_ = PivotDataLayout::BSND;
+    PivotDataLayout kLayout_ = PivotDataLayout::BnBsND;
     // PageAttention
     uint32_t maxBlockNumPerBatch_ = 0;
     int32_t blockSize_ = 0;
@@ -229,7 +229,7 @@ public:
 class PivotCoarseSelectTiling {
 public:
     explicit PivotCoarseSelectTiling(gert::TilingContext *context) : context_(context){};
-    ge::graphStatus DoTiling(PivotCoarseSelectTilingInfo *tilingInfo);
+    ge::graphStatus DoTiling(PivotPivotCoarseSelectTilingInfo *tilingInfo);
 
 private:
     gert::TilingContext *context_ = nullptr;
