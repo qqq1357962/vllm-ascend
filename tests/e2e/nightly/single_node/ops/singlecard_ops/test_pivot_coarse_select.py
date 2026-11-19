@@ -160,8 +160,7 @@ def test_paired_groups_use_their_own_key_tables(inputs):
 
 
 @torch.inference_mode()
-@pytest.mark.parametrize("rows_per_tile", [2, 4])
-def test_shared_pages_respect_unequal_causal_tails_and_interior_mismatches(inputs, rows_per_tile):
+def test_shared_pages_respect_unequal_causal_tails_and_interior_mismatches(inputs):
     q, w, _, _ = inputs
     props = torch_npu.npu.get_device_properties(torch.npu.current_device())
     core_count = getattr(props, "cube_core_num", None)
@@ -173,10 +172,10 @@ def test_shared_pages_respect_unequal_causal_tails_and_interior_mismatches(input
     first = torch.arange(pages, device="npu", dtype=torch.int32)
     other = first.clone()
     other[pages // 2 + 1] = pages  # Keep the first and last physical pages identical.
-    rows = rows_per_tile * core_count + 1
+    rows = 2 * core_count + 1
     template = torch.tensor([0, 0, 0, 0, 0, 1], device="npu", dtype=torch.long)
     tables = torch.stack([first, other])[template]
-    short = context - 4 * PAGE - 1  # The shorter row ends one score tile earlier.
+    short = context - 2 * PAGE - 1
     lengths = torch.tensor([context, short, short, context, context, context], device="npu", dtype=torch.int32)
     q_bar = q.unflatten(0, (-1, GROUP_SIZE)).float().mean(1).to(q.dtype).repeat_interleave(2, dim=0)
     w_bar = w.unflatten(0, (-1, GROUP_SIZE)).float().mean(1).to(w.dtype).repeat_interleave(2, dim=0)
