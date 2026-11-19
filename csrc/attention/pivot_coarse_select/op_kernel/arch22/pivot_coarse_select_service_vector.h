@@ -107,6 +107,8 @@ private:
     static constexpr uint32_t LD_DST = 8;
     static constexpr int64_t LD_SLOT_READY = 1;
     uint32_t pendingTiles_ = 0;
+    __aicore__ inline void LoadScaleTile(int32_t headTile, int64_t rowOffset, int64_t weightOffset,
+        int32_t scoreStride, int32_t mmUbStride);
     __aicore__ inline void AccumulateWideTile(const LocalTensor<float> &scores,
         const LocalTensor<uint32_t> &ids, LocalTensor<float> &sortScratch, bool lastTile);
 
@@ -280,6 +282,24 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::CleanInvalidOutput(i
 }
 
 template <typename LIT>
+__aicore__ inline void PivotCoarseSelectServiceVector<LIT>::LoadScaleTile(int32_t headTile,
+    int64_t rowOffset, int64_t weightOffset, int32_t scoreStride, int32_t mmUbStride)
+{
+    const int32_t count = Min(groupInner_, gSize_ - headTile * groupInner_);
+    const int32_t slot = headTile % 2;
+    auto tile = tmpUb_[slot * (groupInner_ * s2BaseSize_ + s2BaseSize_)];
+    auto weight = tile[count * s2BaseSize_].template ReinterpretCast<W_T>();
+    if constexpr (!IsSameType<W_T, float>::value) {
+        weight = weight[groupInner_];
+    }
+    WaitFlag<HardEvent::V_MTE2>(slot);
+    PivotCoarseSelectVec::CopyIn(tile, weight, mm1ResGm, weightsGm,
+        rowOffset + headTile * groupInner_ * scoreStride, weightOffset + headTile * groupInner_,
+        count, scoreStride, mmUbStride);
+    SetFlag<HardEvent::MTE2_V>(slot);
+}
+
+template <typename LIT>
 __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
     const LocalTensor<float> &scores, const LocalTensor<uint32_t> &ids,
     LocalTensor<float> &sortScratch, bool lastTile)
@@ -374,28 +394,11 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
             const bool fastWide = !LIT::pivotReuse && constInfo_.batchWideMerge;
             const int64_t rowOffset = mmGmOffset + innerS1Idx * gSize_ * info.actualSingleProcessSInnerSizeAlign;
             const int64_t weightOffset = weightGmOffset + innerS1Idx * gSize_;
-            const auto headCount = [&](int32_t headTile) {
-                return Min(groupInner_, gSize_ - headTile * groupInner_);
-            };
-            const auto load = [&](int32_t headTile) {
-                const int32_t count = headCount(headTile);
-                const int32_t slot = headTile % 2;
-                auto tile = tmpUb_[slot * (groupInner_ * s2BaseSize_ + s2BaseSize_)];
-                auto weight = tile[count * s2BaseSize_].template ReinterpretCast<W_T>();
-                if constexpr (!IsSameType<W_T, float>::value) {
-                    weight = weight[groupInner_];
-                }
-                WaitFlag<HardEvent::V_MTE2>(slot);
-                PivotCoarseSelectVec::CopyIn(tile, weight, mm1ResGm, weightsGm,
-                    rowOffset + headTile * groupInner_ * info.actualSingleProcessSInnerSizeAlign,
-                    weightOffset + headTile * groupInner_, count, info.actualSingleProcessSInnerSizeAlign, mmUbStride);
-                SetFlag<HardEvent::MTE2_V>(slot);
-            };
             if (fastWide) {
-                load(0);
+                LoadScaleTile(0, rowOffset, weightOffset, info.actualSingleProcessSInnerSizeAlign, mmUbStride);
             }
             for (int32_t headTile = 0; headTile < outerG; ++headTile) {
-                const int32_t count = headCount(headTile);
+                const int32_t count = Min(groupInner_, gSize_ - headTile * groupInner_);
                 const int32_t slot = headTile % 2;
                 auto tile = tmpUb_[slot * (groupInner_ * s2BaseSize_ + s2BaseSize_)];
                 auto fp32Weight = tile[count * s2BaseSize_];
@@ -404,10 +407,10 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
                     weight = weight[groupInner_];
                 }
                 if (!fastWide) {
-                    load(headTile);
+                    LoadScaleTile(headTile, rowOffset, weightOffset, info.actualSingleProcessSInnerSizeAlign, mmUbStride);
                 } else if (headTile + 1 < outerG) {
                     // Submit the next DMA into the other slot before scaling the current scores.
-                    load(headTile + 1);
+                    LoadScaleTile(headTile + 1, rowOffset, weightOffset, info.actualSingleProcessSInnerSizeAlign, mmUbStride);
                 }
                 WaitFlag<HardEvent::MTE2_V>(slot);
                 PivotCoarseSelectVec::DoScale(reduceCacheBuf[REDUCE_BANK_CONFLICT_NUM], tile, fp32Weight, weight,

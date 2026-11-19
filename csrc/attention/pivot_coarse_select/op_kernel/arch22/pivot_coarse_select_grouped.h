@@ -33,8 +33,8 @@ __aicore__ inline void MeanCoarseRows(GlobalTensor<T> &src, GlobalTensor<T> &dst
     const LocalTensor<float> &sum, const LocalTensor<float> &converted)
 {
     if (group.count <= PIVOT_GROUP_SIZE && width * sizeof(T) % PivotCoarseSelectVec::BLOCK_BYTES == 0) {
-        PivotMeanRows<T>(reinterpret_cast<__gm__ uint8_t *>(src.GetPhyAddr()),
-            reinterpret_cast<__gm__ uint8_t *>(dst.GetPhyAddr()), width, group.begin, row, group.count,
+        PivotMeanRows<T>(reinterpret_cast<__gm__ uint8_t *>(const_cast<__gm__ T *>(src.GetPhyAddr())),
+            reinterpret_cast<__gm__ uint8_t *>(const_cast<__gm__ T *>(dst.GetPhyAddr())), width, group.begin, row, group.count,
             raw, sum, converted);
         return;
     }
