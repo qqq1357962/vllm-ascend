@@ -435,7 +435,7 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
     pairCoarseRows = constInfo.batchWideMerge && tiling->groupSize != 0 && !tiling->modifyLocalwindow &&
         constInfo.batchSize >= 2 * usedCoreNum;
     if (pairCoarseRows) {
-        constInfo.mBaseSizeAlign = 2 * Align(constInfo.gSize, BLOCK_CUBE_SIZE);
+        constInfo.mBaseSizeAlign = 2 * Align<uint32_t>(constInfo.gSize, BLOCK_CUBE_SIZE);
     } else {
         SplitCore(aiCoreIdx, usedCoreNum, splitCoreInfo);
     }
