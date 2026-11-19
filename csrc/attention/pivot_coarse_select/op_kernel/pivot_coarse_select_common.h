@@ -126,6 +126,7 @@ struct ConstInfo {
     bool isAccumSeqS2 = false;    // 是否累加模式
     bool isSparseCountOver2K = false; //sparseCount小于等于2048为false
     bool batchWideMerge = false;
+    bool splitWideRows = false;
     bool isLDOpen = false;
     bool returnValueFlag = false;
     bool splitMFlag = false;

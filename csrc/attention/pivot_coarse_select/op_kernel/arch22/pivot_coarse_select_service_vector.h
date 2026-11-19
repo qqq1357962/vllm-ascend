@@ -63,6 +63,7 @@ public:
     __aicore__ inline PivotCoarseSelectServiceVector(){};
     __aicore__ inline void ProcessVec(const PivotCoarseSelectCommon::RunInfo &info);
     __aicore__ inline void ProcessLD();
+    __aicore__ inline void ProcessWideSplitLD();
     __aicore__ inline void InitBuffers(TPipe *pipe);
     __aicore__ inline void InitParams(const struct PivotCoarseSelectCommon::ConstInfo &constInfo,
                                       const PivotCoarseSelectTilingData *__restrict tilingData);
@@ -500,9 +501,10 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
                 // vec1Param Gm = [aic, s1BaseSize_, 2, 16] int64
                 //     16 = [needFd, s2AcSeq, s2Start, s2End, isS2End, bn2idx, s1Idx, S1ProcNum, ......]
 
-                int64_t wsOffset = (blockId_ / 2) * s1BaseSize_ * 2 * 2 * BASE_TOPK +       // 2个AIV共同地址偏移
-                                   (blockId_ % 2) * (s1BaseSize_ / 2) * 2 * 2 * BASE_TOPK + // 每个AIV的地址偏移，S1方向
-                                   (ldS1Offset + innerS1Idx) * 2 * 2 * BASE_TOPK;
+                const uint32_t partialWidth = constInfo_.splitWideRows ? virTopK : BASE_TOPK;
+                int64_t wsOffset = (blockId_ / 2) * s1BaseSize_ * 2 * 2 * partialWidth +       // 2个AIV共同地址偏移
+                                   (blockId_ % 2) * (s1BaseSize_ / 2) * 2 * 2 * partialWidth + // 每个AIV的地址偏移，S1方向
+                                   (ldS1Offset + innerS1Idx) * 2 * 2 * partialWidth;
                 int64_t wsInfoOffset = (blockId_ / 2) * s1BaseSize_ * 2 * paramNum_ +       // 2个AIV共同地址偏移
                                        (blockId_ % 2) * (s1BaseSize_ / 2) * 2 * paramNum_ + // 每个AIV的地址偏移，S1方向
                                        (ldS1Offset + innerS1Idx) * 2 * paramNum_;
@@ -525,15 +527,15 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
                 bool isTailReduce = blockS2StartIdx_ == 0; // 一定是isLastTile
                 // WS偏移规则 blockS2StartIdx_ != 0
                 // 跟前面块做规约 写到0偏移 不用做计算 blockS2StartIdx_ == 0 and !isS2End
-                // 跟后面块做规约 写到1偏移  需要 + s1BaseSize_, BASE_TOPK*2
+                // 跟后面块做规约 写到1偏移  需要 + s1BaseSize_, partialWidth*2
                 if (isTailReduce) { // S2不是最后结束的数据就需要往后做规约，放入第二块ws
                     wsInfoOffset += paramNum_;
-                    wsOffset += 2 * BASE_TOPK;
+                    wsOffset += 2 * partialWidth;
                 }
                 SetWaitFlag<HardEvent::S_MTE3>(HardEvent::S_MTE3);
                 PivotCoarseSelectVec::CopyOut(vec1ParamGm[wsInfoOffset], tmpiBuff, 16);
                 SetWaitFlag<HardEvent::V_MTE3>(HardEvent::V_MTE3);
-                PivotCoarseSelectVec::CopyOut(vec1ResGm[wsOffset], globalTopkUb_[innerS1Idx * BASE_TOPK * 2], 2 * BASE_TOPK);
+                PivotCoarseSelectVec::CopyOut(vec1ResGm[wsOffset], globalTopkUb_[innerS1Idx * partialWidth * 2], 2 * partialWidth);
                 SetWaitFlag<HardEvent::MTE3_V>(HardEvent::MTE3_V);
             }
         } else if (cuRealAcSeq <= 0) {
@@ -569,6 +571,58 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
     if (info.isLastS2InnerLoop) {
         // S2最后一个Loop后, 下一个基本块初始从0开始
         blockS2StartIdx_ = 0;
+    }
+}
+
+template <typename LIT>
+__aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessWideSplitLD()
+{
+    // The normalized grouped layout has one query per table row, handled by the even AIV.
+    if (blockId_ % 2 != 0) {
+        return;
+    }
+    const uint32_t core = blockId_ / 2;
+    const uint32_t slotsPerCore = s1BaseSize_ * 2; // Head and tail for each query slot.
+    const uint32_t tail = core * slotsPerCore + 1;
+    if (vec1ParamGm.GetValue(tail * paramNum_) != 1) {
+        return;
+    }
+    const uint64_t row = vec1ParamGm.GetValue(tail * paramNum_ + 5);
+    const uint64_t outputOffset = vec1ParamGm.GetValue(tail * paramNum_ + 8);
+    const uint32_t pairsPerList = virTopK * 2;
+    const uint32_t tilePairs = BASE_TOPK * 2;
+    auto accumulator = ldToBeMrgBuf_.Get<float>();
+    auto incoming = accumulator[pairsPerList];
+    auto scratch = ldTmpBuf_.Get<float>();
+    DataCopy(accumulator, vec1ResGm[static_cast<uint64_t>(tail) * pairsPerList], pairsPerList);
+    SetWaitFlag<HardEvent::MTE2_V>(HardEvent::MTE2_V);
+
+    for (uint32_t next = core + 1; next < GetBlockNum(); ++next) {
+        const uint32_t head = next * slotsPerCore;
+        const uint32_t metadata = head * paramNum_;
+        if (vec1ParamGm.GetValue(metadata) != 1 ||
+            static_cast<uint64_t>(vec1ParamGm.GetValue(metadata + 5)) != row) {
+            break;
+        }
+        const uint64_t offset = static_cast<uint64_t>(head) * pairsPerList;
+        // Feed bounded runs to the four-input merge, whose single-run limit is below 4096.
+        for (uint32_t chunk = 0; chunk < pairsPerList; chunk += tilePairs) {
+            DataCopy(incoming, vec1ResGm[offset + chunk], tilePairs);
+            SetWaitFlag<HardEvent::MTE2_V>(HardEvent::MTE2_V);
+            PivotCoarseSelectVec::MergeSort(accumulator, virTopK, incoming, BASE_TOPK, scratch);
+            SetWaitFlag<HardEvent::V_MTE2>(HardEvent::V_MTE2);
+        }
+        if (vec1ParamGm.GetValue(metadata + 4) == 1) {
+            break;
+        }
+    }
+
+    auto out = ldOutIdxBuf_.Get<uint32_t>();
+    for (uint32_t chunk = 0; chunk < pairsPerList; chunk += tilePairs) {
+        PivotCoarseSelectVec::ExtractIndex(out, accumulator[chunk].template ReinterpretCast<uint32_t>(), BASE_TOPK);
+        SetWaitFlag<HardEvent::V_MTE3>(HardEvent::V_MTE3);
+        DataCopy(indiceOutGm[outputOffset + chunk / 2], out.template ReinterpretCast<int32_t>(), BASE_TOPK);
+        SetWaitFlag<HardEvent::MTE3_V>(HardEvent::MTE3_V);
     }
 }
 

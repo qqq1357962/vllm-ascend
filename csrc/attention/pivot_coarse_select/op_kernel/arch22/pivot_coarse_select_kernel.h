@@ -282,14 +282,14 @@ __aicore__ inline uint32_t PivotCoarseSelectKernel<LIT>::GetTotalBaseBlockNum()
         GetS1S2ActualSeqLen(bIdx, actS1Size, actS2Size);
         s1GBaseNum = CeilDiv(actS1Size, constInfo.s1BaseSize);
         if (!constInfo.attenMaskFlag) {
-            s2BaseNum = constInfo.isSparseCountOver2K
+            s2BaseNum = constInfo.isSparseCountOver2K && !constInfo.splitWideRows
                       ? (actS2Size > 0 ? 1 : 0)
                       : CeilDiv(actS2Size, constInfo.s2BaseSize);
             totalBlockNum += s1GBaseNum * s2BaseNum * constInfo.kHeadNum;
             continue;
         }
         for (uint32_t s1gIdx = 0; s1gIdx < s1GBaseNum; s1gIdx++) {
-            s2BaseNum = constInfo.isSparseCountOver2K
+            s2BaseNum = constInfo.isSparseCountOver2K && !constInfo.splitWideRows
                       ? (actS2Size > 0 ? 1 : 0)
                       : GetS2BaseBlockNumOnMask(bIdx, s1gIdx, actS1Size, actS2Size);
             totalBlockNum += s2BaseNum * constInfo.kHeadNum;
@@ -340,7 +340,7 @@ __aicore__ void inline PivotCoarseSelectKernel<LIT>::SplitCore(uint32_t curCoreI
                 info.s2Start = 0;
                 findLastCoreEnd = false;
             }
-            s2Loop = constInfo.isSparseCountOver2K ? (actS2Size > 0 ? 1 : 0) : s2BaseNum;
+            s2Loop = constInfo.isSparseCountOver2K && !constInfo.splitWideRows ? (actS2Size > 0 ? 1 : 0) : s2BaseNum;
             for (uint32_t s2Idx = 0; s2Idx < s2Loop;) {
                 if (findLastCoreEnd) {
                     info.bN2Start = bN2Idx;
@@ -352,7 +352,7 @@ __aicore__ void inline PivotCoarseSelectKernel<LIT>::SplitCore(uint32_t curCoreI
                 if (lastGS1RemainBlockCnt + s2RemainBaseNum >= coreDealBlockCnt) {
                     info.bN2End = bN2Idx;
                     info.gS1End = gS1Idx;
-                    info.s2End = constInfo.isSparseCountOver2K
+                    info.s2End = constInfo.isSparseCountOver2K && !constInfo.splitWideRows
                                ? s2BaseNum - 1
                                : s2Idx + coreDealBlockCnt - lastGS1RemainBlockCnt - 1;
 
@@ -434,8 +434,10 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
     // Keep enough independent row pairs to occupy the device before selecting this schedule.
     pairCoarseRows = constInfo.batchWideMerge && tiling->groupSize != 0 && !tiling->modifyLocalwindow &&
         constInfo.batchSize >= 2 * usedCoreNum;
+    constInfo.splitWideRows = constInfo.batchWideMerge && tiling->groupSize != 0 &&
+        !tiling->modifyLocalwindow && !pairCoarseRows;
     if (pairCoarseRows) {
-        constInfo.mBaseSizeAlign = 2 * Align<uint32_t>(constInfo.gSize, BLOCK_CUBE_SIZE);
+        constInfo.mBaseSizeAlign = 2 * PivotCoarseSelectCommon::Align<uint32_t>(constInfo.gSize, BLOCK_CUBE_SIZE);
     } else {
         SplitCore(aiCoreIdx, usedCoreNum, splitCoreInfo);
     }
@@ -455,7 +457,8 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
     // (aic, 8, 2, 2, 2048)
     // (aic, s1_cube, 头尾, idx/value, K)
     vec1ResGm.SetGlobalBuffer((__gm__ float *)(workspace + offset));
-    offset += GetBlockNum() * constInfo.s1BaseSize * WS_DOUBLE * WS_DOUBLE * BASE_TOPK * sizeof(float);
+    const uint32_t partialWidth = constInfo.splitWideRows ? constInfo.sparseCount : BASE_TOPK;
+    offset += GetBlockNum() * constInfo.s1BaseSize * WS_DOUBLE * WS_DOUBLE * partialWidth * sizeof(float);
 
     // (aic, 8, 2, 16)
     // (aic, s1_cube, 头尾，16ele)
@@ -656,7 +659,8 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::SetPairRunInfo(PivotCoarseS
     info.actS2Size = length;
     info.actMBaseSize = constInfo.gSize;
     info.actualSingleProcessSInnerSize = Min(length - s2 * constInfo.s2BaseSize, constInfo.s2BaseSize);
-    info.actualSingleProcessSInnerSizeAlign = Align(info.actualSingleProcessSInnerSize, PivotCoarseSelectCommon::ConstInfo::BUFFER_SIZE_BYTE_32B);
+    info.actualSingleProcessSInnerSizeAlign = PivotCoarseSelectCommon::Align(info.actualSingleProcessSInnerSize,
+        PivotCoarseSelectCommon::ConstInfo::BUFFER_SIZE_BYTE_32B);
     info.tensorQueryOffset = static_cast<uint64_t>(row) * constInfo.gSize * constInfo.headDim;
     info.tensorWeightsOffset = static_cast<uint64_t>(row) * constInfo.gSize;
     info.tensorKeyOffset = 0; // The paged key loader addresses the table row by bIdx.
@@ -803,7 +807,11 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessDecode()
         ICachePreLoad(LD_PREFETCH_LEN);
         SyncAll();
         if (splitCoreInfo.isLD) {
-            vectorService.ProcessLD();
+            if (constInfo.splitWideRows) {
+                vectorService.ProcessWideSplitLD();
+            } else {
+                vectorService.ProcessLD();
+            }
         }
     }
 }

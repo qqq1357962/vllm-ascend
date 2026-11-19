@@ -197,7 +197,7 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
             }
             // Fill the aligned suffix with the vector pipe, plus any scalar tail in the prefix block.
             const uint32_t lanes = 32 / sizeof(int32_t);
-            const uint32_t alignedSize = Align(size, lanes);
+            const uint32_t alignedSize = PivotCoarseSelectCommon::Align(size, lanes);
             for (uint32_t i = size; i < alignedSize; ++i) {
                 ids.SetValue(i, -1);
             }
