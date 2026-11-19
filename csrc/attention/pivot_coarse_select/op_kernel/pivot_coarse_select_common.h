@@ -127,6 +127,7 @@ struct ConstInfo {
     bool isSparseCountOver2K = false; //sparseCount小于等于2048为false
     bool batchWideMerge = false;
     bool splitWideRows = false;
+    bool pairedSchedule = false;
     bool isLDOpen = false;
     bool returnValueFlag = false;
     bool splitMFlag = false;
