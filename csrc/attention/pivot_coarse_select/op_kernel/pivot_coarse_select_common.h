@@ -103,6 +103,7 @@ struct ConstInfo {
     uint32_t mBaseSizeAlign = 1ULL;
     uint32_t s1BaseSize = 1ULL;
     uint32_t s2BaseSize = 1ULL;
+    uint32_t scoreSlots = 2; // The native LI pipeline double-buffers Cube output.
 
     uint64_t batchSize = 0ULL;
     uint64_t gSize = 0ULL;

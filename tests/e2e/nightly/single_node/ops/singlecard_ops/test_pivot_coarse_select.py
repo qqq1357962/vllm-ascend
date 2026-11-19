@@ -175,7 +175,7 @@ def test_shared_pages_respect_unequal_causal_tails_and_interior_mismatches(input
     rows = 2 * core_count + 1
     template = torch.tensor([0, 0, 0, 0, 0, 1], device="npu", dtype=torch.long)
     tables = torch.stack([first, other])[template]
-    short = context - 2 * PAGE - 1
+    short = context - 4 * PAGE - 1  # The shorter row ends one score tile earlier.
     lengths = torch.tensor([context, short, short, context, context, context], device="npu", dtype=torch.int32)
     q_bar = q.unflatten(0, (-1, GROUP_SIZE)).float().mean(1).to(q.dtype).repeat_interleave(2, dim=0)
     w_bar = w.unflatten(0, (-1, GROUP_SIZE)).float().mean(1).to(w.dtype).repeat_interleave(2, dim=0)

@@ -168,7 +168,9 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::InitBuffers(TPipe *p
     tmpUb_ = tmpBuf_.Get<float>();
     globalTopkIndice_ = indexBuf_.Get<int32_t>();
     globalTopkUb_ = sortOutBuf_.Get<float>();
-    SortedBasicBlock_ = globalTopkUb_[virTopK * 2 * 2];
+    if (!constInfo_.isSparseCountOver2K) {
+        SortedBasicBlock_ = globalTopkUb_[virTopK * 2 * 2];
+    }
     globalTopkNum_ = 0;
 
     // 基本块执行前初始化UB和GM
@@ -349,7 +351,8 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
     int32_t cuBaseS2Idx = info.s2Idx * s2BaseSize_;
 
     // 计算基本块基地址偏移 偶数循环 -> 0 + aic_offset  奇数循环 -> 512*512 + aic_offset
-    int64_t mmGmOffset = (info.loop % 2) * (constInfo_.mBaseSizeAlign * s2BaseSize_);
+    const uint32_t scoreSlot = info.pairedRows ? info.loop & (constInfo_.scoreSlots - 1) : info.loop % 2;
+    int64_t mmGmOffset = scoreSlot * (constInfo_.mBaseSizeAlign * s2BaseSize_);
     // (B,S1,N1,1);(T,N1,1) -> (B,S1,N2,G,1) 当前只切分到S1轴
     int64_t weightGmOffset = info.tensorWeightsOffset + cuBaseS1Idx * kHeadNum_ * gSize_;
 

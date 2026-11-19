@@ -441,6 +441,8 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
     constInfo.splitWideRows = constInfo.batchWideMerge && tiling->groupSize != 0 &&
         !tiling->modifyLocalwindow && !pairCoarseRows;
     if (pairCoarseRows) {
+        // Each slot stores two proxy rows. Four slots still fit the original M=512 double-buffer budget.
+        constInfo.scoreSlots = 2 * WS_DOUBLE;
         constInfo.mBaseSizeAlign = 2 * PivotCoarseSelectCommon::Align<uint32_t>(constInfo.gSize, BLOCK_CUBE_SIZE);
     } else {
         SplitCore(aiCoreIdx, usedCoreNum, splitCoreInfo);
@@ -453,7 +455,7 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
     uint64_t offset = 0;
 
     // mm1开DoubleBuffer
-    uint64_t singleCoreMm1ResSize = WS_DOUBLE * constInfo.mBaseSizeAlign * constInfo.s2BaseSize * sizeof(MM1_OUT_T);
+    uint64_t singleCoreMm1ResSize = constInfo.scoreSlots * constInfo.mBaseSizeAlign * constInfo.s2BaseSize * sizeof(MM1_OUT_T);
     mm1ResGm.SetGlobalBuffer((__gm__ MM1_OUT_T *)(workspace + offset + aiCoreIdx * singleCoreMm1ResSize));
     offset += GetBlockNum() * singleCoreMm1ResSize;
 
@@ -685,8 +687,9 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessCoarsePairs()
     }
     if ASCEND_IS_AIV {
         vectorService.AllocEventID();
-        CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
-        CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
+        for (uint32_t slot = 0; slot < constInfo.scoreSlots; ++slot) {
+            CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
+        }
     } else {
         matmulService.AllocEventID();
     }
@@ -750,8 +753,9 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessCoarsePairs()
         vectorService.FreeEventID();
     } else {
         matmulService.FreeEventID();
-        CrossCoreWaitFlag(constInfo.syncV1C1);
-        CrossCoreWaitFlag(constInfo.syncV1C1);
+        for (uint32_t slot = 0; slot < constInfo.scoreSlots; ++slot) {
+            CrossCoreWaitFlag(constInfo.syncV1C1);
+        }
     }
 }
 
