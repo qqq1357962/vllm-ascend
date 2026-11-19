@@ -371,31 +371,48 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
             if (constInfo_.isSparseCountOver2K) {
                 WaitFlag<HardEvent::V_MTE2>(EVENTID_V_TO_MTE2_TMPUB);
             }
-            for (int outerGidx = 0; outerGidx < outerG; outerGidx++) {
-                int32_t procGnum = outerGidx != outerG - 1 ? groupInner_ : gSize_ - outerGidx * groupInner_;
-
-                int32_t pingpong = outerGidx % 2;
-                LocalTensor<float> dbTmpUb = tmpUb_[pingpong * (groupInner_ * s2BaseSize_ + s2BaseSize_)];
-                LocalTensor<float> weightsInUb = dbTmpUb[procGnum * s2BaseSize_];
-                WaitFlag<HardEvent::V_MTE2>(pingpong);
-                LocalTensor<W_T> weightsInTUb = weightsInUb.template ReinterpretCast<W_T>();
+            const bool fastWide = !LIT::pivotReuse && constInfo_.batchWideMerge;
+            const int64_t rowOffset = mmGmOffset + innerS1Idx * gSize_ * info.actualSingleProcessSInnerSizeAlign;
+            const int64_t weightOffset = weightGmOffset + innerS1Idx * gSize_;
+            const auto headCount = [&](int32_t headTile) {
+                return Min(groupInner_, gSize_ - headTile * groupInner_);
+            };
+            const auto load = [&](int32_t headTile) {
+                const int32_t count = headCount(headTile);
+                const int32_t slot = headTile % 2;
+                auto tile = tmpUb_[slot * (groupInner_ * s2BaseSize_ + s2BaseSize_)];
+                auto weight = tile[count * s2BaseSize_].template ReinterpretCast<W_T>();
                 if constexpr (!IsSameType<W_T, float>::value) {
-                    weightsInTUb = weightsInTUb[groupInner_];
+                    weight = weight[groupInner_];
                 }
-                int64_t mmGmAllOffet = mmGmOffset + innerS1Idx * gSize_ * info.actualSingleProcessSInnerSizeAlign +
-                                       outerGidx * groupInner_ * info.actualSingleProcessSInnerSizeAlign;
-                int64_t weightGmAllOffset = weightGmOffset + innerS1Idx * gSize_ + outerGidx * groupInner_;
-
-                PivotCoarseSelectVec::CopyIn(dbTmpUb, weightsInTUb, mm1ResGm, weightsGm, mmGmAllOffet, weightGmAllOffset,
-                                     procGnum, info.actualSingleProcessSInnerSizeAlign, mmUbStride);
-
-                SetFlag<HardEvent::MTE2_V>(pingpong);
-                WaitFlag<HardEvent::MTE2_V>(pingpong);
-                PivotCoarseSelectVec::DoScale(reduceCacheBuf[REDUCE_BANK_CONFLICT_NUM], dbTmpUb, weightsInUb, weightsInTUb,
-                                      brcBuf, procGnum, s2BaseSize_, outerGidx);
-                // confused reduceOp in DoScale
-                // neednot use PivotCoarseSelectVec::doReduce(mmInUb, reduceOutInner, procGnum, (s2BaseSize_+8));
-                SetFlag<HardEvent::V_MTE2>(pingpong);
+                WaitFlag<HardEvent::V_MTE2>(slot);
+                PivotCoarseSelectVec::CopyIn(tile, weight, mm1ResGm, weightsGm,
+                    rowOffset + headTile * groupInner_ * info.actualSingleProcessSInnerSizeAlign,
+                    weightOffset + headTile * groupInner_, count, info.actualSingleProcessSInnerSizeAlign, mmUbStride);
+                SetFlag<HardEvent::MTE2_V>(slot);
+            };
+            if (fastWide) {
+                load(0);
+            }
+            for (int32_t headTile = 0; headTile < outerG; ++headTile) {
+                const int32_t count = headCount(headTile);
+                const int32_t slot = headTile % 2;
+                auto tile = tmpUb_[slot * (groupInner_ * s2BaseSize_ + s2BaseSize_)];
+                auto fp32Weight = tile[count * s2BaseSize_];
+                auto weight = fp32Weight.template ReinterpretCast<W_T>();
+                if constexpr (!IsSameType<W_T, float>::value) {
+                    weight = weight[groupInner_];
+                }
+                if (!fastWide) {
+                    load(headTile);
+                } else if (headTile + 1 < outerG) {
+                    // Submit the next DMA into the other slot before scaling the current scores.
+                    load(headTile + 1);
+                }
+                WaitFlag<HardEvent::MTE2_V>(slot);
+                PivotCoarseSelectVec::DoScale(reduceCacheBuf[REDUCE_BANK_CONFLICT_NUM], tile, fp32Weight, weight,
+                    brcBuf, count, s2BaseSize_, headTile);
+                SetFlag<HardEvent::V_MTE2>(slot);
             }
 
             int32_t gRedCnt = groupInner_ > gSize_ ? gSize_ : groupInner_;
@@ -403,18 +420,20 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
             PivotCoarseSelectVec::DoReduce(reduceCacheBuf[REDUCE_BANK_CONFLICT_NUM], reduceOutInner, gRedCnt, s2BaseSize_);
             outQueue_.FreeTensor(reduceCacheBuf);
 
-            LocalTensor<float> sortScoreUb = reduceOutBuff;
-            LocalTensor<float> sortIndiceUb = reduceOutBuff[cuS2LenVecAlign];
-            Duplicate(sortScoreUb.template ReinterpretCast<int32_t>(), PivotCoarseSelectVec::NEG_INF, cuS2LenVecAlign);
-            PipeBarrier<PIPE_V>();
-            Adds(sortScoreUb, reduceOutInner, 0.0f, cuS2Len);
-            PipeBarrier<PIPE_V>();
-            LocalTensor<int32_t> sortIndiceUbInt = sortIndiceUb.template ReinterpretCast<int32_t>();
-            // 无效数据索引填充为-1
-            if (cuS2LenVecAlign != cuS2Len) {
-                Duplicate(sortIndiceUbInt, -1, cuS2LenVecAlign);
+            const bool fullWideTile = fastWide && cuS2Len == s2BaseSize_;
+            auto sortScoreUb = fullWideTile ? reduceOutInner : reduceOutBuff;
+            auto sortIndiceUb = fullWideTile ? reduceOutBuff : reduceOutBuff[cuS2LenVecAlign];
+            auto sortIndiceUbInt = sortIndiceUb.template ReinterpretCast<int32_t>();
+            if (!fullWideTile) {
+                Duplicate(sortScoreUb.template ReinterpretCast<int32_t>(), PivotCoarseSelectVec::NEG_INF, cuS2LenVecAlign);
+                PipeBarrier<PIPE_V>();
+                Adds(sortScoreUb, reduceOutInner, 0.0f, cuS2Len);
+                PipeBarrier<PIPE_V>();
+                if (cuS2LenVecAlign != cuS2Len) {
+                    Duplicate(sortIndiceUbInt, -1, cuS2LenVecAlign);
+                    PipeBarrier<PIPE_V>();
+                }
             }
-            PipeBarrier<PIPE_V>();
             Adds(sortIndiceUbInt, globalTopkIndice_, static_cast<int32_t>(cuBaseS2Idx), cuS2Len);
             PipeBarrier<PIPE_V>();
 

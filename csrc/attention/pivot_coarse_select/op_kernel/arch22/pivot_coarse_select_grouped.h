@@ -32,6 +32,12 @@ __aicore__ inline void MeanCoarseRows(GlobalTensor<T> &src, GlobalTensor<T> &dst
     const CoarseWindow &group, uint32_t row, const LocalTensor<T> &raw,
     const LocalTensor<float> &sum, const LocalTensor<float> &converted)
 {
+    if (group.count <= PIVOT_GROUP_SIZE && width * sizeof(T) % PivotCoarseSelectVec::BLOCK_BYTES == 0) {
+        PivotMeanRows<T>(reinterpret_cast<__gm__ uint8_t *>(src.GetPhyAddr()),
+            reinterpret_cast<__gm__ uint8_t *>(dst.GetPhyAddr()), width, group.begin, row, group.count,
+            raw, sum, converted);
+        return;
+    }
     for (uint32_t i = 0; i < group.count; ++i) {
         const DataCopyExtParams copy{1, static_cast<uint32_t>(width * sizeof(T)), 0, 0, 0};
         DataCopyPad(raw, src[static_cast<uint64_t>(group.begin + i) * width], copy,
@@ -171,7 +177,7 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
         GlobalTensor<Q> rawQ, proxyQ;
         GlobalTensor<W> rawW, proxyW;
         if (raw) {
-            pipe.InitBuffer(rawBuf, Max(qWidth * sizeof(Q), heads * sizeof(W)));
+            pipe.InitBuffer(rawBuf, PIVOT_GROUP_SIZE * Max(qWidth * sizeof(Q), heads * sizeof(W)));
             pipe.InitBuffer(sumBuf, qWidth * sizeof(float));
             pipe.InitBuffer(convertedBuf, qWidth * sizeof(float));
             rawQ.SetGlobalBuffer(reinterpret_cast<__gm__ Q *>(query));
