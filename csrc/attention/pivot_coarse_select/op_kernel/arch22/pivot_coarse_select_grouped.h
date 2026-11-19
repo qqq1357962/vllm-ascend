@@ -92,6 +92,7 @@ __aicore__ inline bool WindowKeyAlreadySelected(const LocalTensor<int32_t> &ids,
 }
 
 // A Cube key load can serve two proxies only when every shared logical page maps to the same physical page.
+// Each of the three comparison arrays uses 1 KiB. The power-of-two tile supports halving reduction.
 constexpr uint32_t PAGE_COMPARE_TILE = 256;
 __aicore__ inline bool CanShareKeyPages(const GlobalTensor<int32_t> &table, uint64_t first, uint64_t second,
     uint32_t pages, const LocalTensor<int32_t> &left, const LocalTensor<int32_t> &right,

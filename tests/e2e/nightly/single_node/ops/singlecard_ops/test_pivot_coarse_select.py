@@ -157,3 +157,49 @@ def test_paired_groups_use_their_own_key_tables(inputs):
         actual.sort(dim=-1).values, expected.index_select(0, pattern).sort(dim=-1).values, rtol=0, atol=0
     )
     torch.testing.assert_close(actual_sizes, sizes.index_select(0, pattern), rtol=0, atol=0)
+
+
+@torch.inference_mode()
+def test_shared_pages_respect_unequal_causal_tails_and_interior_mismatches(inputs):
+    q, w, _, _ = inputs
+    props = torch_npu.npu.get_device_properties(torch.npu.current_device())
+    core_count = getattr(props, "cube_core_num", None)
+    if not core_count:
+        pytest.skip("requires device Cube core count to select the paired schedule")
+    context = 65536  # More than one 256-page comparison tile.
+    pages = context // PAGE
+    k = torch.randn(2 * pages, PAGE, 1, HEAD_DIM, device="npu", dtype=q.dtype)
+    first = torch.arange(pages, device="npu", dtype=torch.int32)
+    other = first.clone()
+    other[pages // 2 + 1] = pages  # Keep the first and last physical pages identical.
+    rows = 2 * core_count + 1
+    template = torch.tensor([0, 0, 0, 0, 0, 1], device="npu", dtype=torch.long)
+    tables = torch.stack([first, other])[template]
+    short = context - 2 * PAGE - 1
+    lengths = torch.tensor([context, short, short, context, context, context], device="npu", dtype=torch.int32)
+    q_bar = q.unflatten(0, (-1, GROUP_SIZE)).float().mean(1).to(q.dtype).repeat_interleave(2, dim=0)
+    w_bar = w.unflatten(0, (-1, GROUP_SIZE)).float().mean(1).to(w.dtype).repeat_interleave(2, dim=0)
+    op = torch.ops._C_ascend.npu_indexer_coarse_screen
+
+    def run(selection):
+        count = selection.numel()
+        return op(
+            q_bar.index_select(0, selection),
+            w_bar.index_select(0, selection),
+            k,
+            actual_seq_lengths_query=torch.arange(1, count + 1, device="npu", dtype=torch.int32) * GROUP_SIZE,
+            actual_seq_lengths_key=lengths.index_select(0, selection),
+            block_table=tables.index_select(0, selection),
+            coarse_count=4096,
+        )
+
+    expected, expected_size = run(torch.arange(len(template), device="npu"))
+    choices = torch.arange(rows, device="npu") % len(template)
+    actual, size = run(choices)
+    torch.testing.assert_close(
+        actual.sort(dim=-1).values,
+        expected.index_select(0, choices).sort(dim=-1).values,
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(size, expected_size.index_select(0, choices), rtol=0, atol=0)
