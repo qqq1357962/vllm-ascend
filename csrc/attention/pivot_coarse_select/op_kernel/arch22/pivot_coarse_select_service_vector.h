@@ -99,7 +99,12 @@ private:
     TBuf<TPosition::VECCALC> sortedTileBuf_;
 
     // MrgSort accepts four independently sorted runs per instruction.
-    static constexpr uint32_t MERGE_FAN_IN = 4;
+    static constexpr uint32_t MERGE_FAN_IN = PivotCoarseSelectVec::MRG_BLOCK_4;
+    static constexpr uint32_t LD_STATUS = 0;
+    static constexpr uint32_t LD_ROW_END = 4;
+    static constexpr uint32_t LD_ROW = 5;
+    static constexpr uint32_t LD_DST = 8;
+    static constexpr int64_t LD_SLOT_READY = 1;
     uint32_t pendingTiles_ = 0;
     __aicore__ inline void AccumulateWideTile(const LocalTensor<float> &scores,
         const LocalTensor<uint32_t> &ids, LocalTensor<float> &sortScratch, bool lastTile);
@@ -154,7 +159,7 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::InitBuffers(TPipe *p
     pipe->InitBuffer(paramBuf_, LD_PARAM_NUM * sizeof(int64_t));
 
     if (constInfo_.batchWideMerge) {
-        pipe->InitBuffer(sortedTileBuf_, MERGE_FAN_IN * s2BaseSize_ * 2 * sizeof(float));
+        pipe->InitBuffer(sortedTileBuf_, MERGE_FAN_IN * s2BaseSize_ * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM * sizeof(float));
     }
 
     tmpUb_ = tmpBuf_.Get<float>();
@@ -279,8 +284,8 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::AccumulateWideTile(
     LocalTensor<float> &sortScratch, bool lastTile)
 {
     auto tileRuns = sortedTileBuf_.Get<float>();
-    const uint32_t tilePairs = s2BaseSize_ * 2;
-    Sort<float, true>(tileRuns[pendingTiles_ * tilePairs], scores, ids, sortScratch, s2BaseSize_ / 32);
+    const uint32_t tilePairs = s2BaseSize_ * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM;
+    Sort<float, true>(tileRuns[pendingTiles_ * tilePairs], scores, ids, sortScratch, s2BaseSize_ / PivotCoarseSelectVec::BLOCK_BYTES);
     PipeBarrier<PIPE_V>();
     ++pendingTiles_;
     if (pendingTiles_ != MERGE_FAN_IN && !lastTile) {
@@ -511,15 +516,15 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
 
                 LocalTensor<int64_t> tmpiBuff = paramBuf_.Get<int64_t>();
                 SetWaitFlag<HardEvent::MTE3_S>(HardEvent::MTE3_S);
-                tmpiBuff.SetValue(0, static_cast<int64_t>(1));
+                tmpiBuff.SetValue(LD_STATUS, LD_SLOT_READY);
                 tmpiBuff.SetValue(1, static_cast<int64_t>(cuRealAcSeq));
                 tmpiBuff.SetValue(2, static_cast<int64_t>(blockS2StartIdx_));
                 tmpiBuff.SetValue(3, static_cast<int64_t>(cuBaseS2Idx + cuS2Len));
-                tmpiBuff.SetValue(4, static_cast<int64_t>(isS2End));
-                tmpiBuff.SetValue(5, static_cast<int64_t>(info.bN2Idx));
+                tmpiBuff.SetValue(LD_ROW_END, static_cast<int64_t>(isS2End));
+                tmpiBuff.SetValue(LD_ROW, static_cast<int64_t>(info.bN2Idx));
                 tmpiBuff.SetValue(6, static_cast<int64_t>(cuS1Idx));
                 tmpiBuff.SetValue(7, static_cast<int64_t>(cuS1ProcNum));
-                tmpiBuff.SetValue(8, static_cast<int64_t>(info.indiceOutOffset + cuS1Idx * constInfo_.sparseCount));
+                tmpiBuff.SetValue(LD_DST, static_cast<int64_t>(info.indiceOutOffset + cuS1Idx * constInfo_.sparseCount));
                 // 写入头尾判断
                 // [head, tail]
                 // head: 与前面规约，与前后规约
@@ -584,13 +589,13 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessWideSplitLD()
     const uint32_t core = blockId_ / 2;
     const uint32_t slotsPerCore = s1BaseSize_ * 2; // Head and tail for each query slot.
     const uint32_t tail = core * slotsPerCore + 1;
-    if (vec1ParamGm.GetValue(tail * paramNum_) != 1) {
+    if (vec1ParamGm.GetValue(tail * paramNum_ + LD_STATUS) != LD_SLOT_READY) {
         return;
     }
-    const uint64_t row = vec1ParamGm.GetValue(tail * paramNum_ + 5);
-    const uint64_t outputOffset = vec1ParamGm.GetValue(tail * paramNum_ + 8);
-    const uint32_t pairsPerList = virTopK * 2;
-    const uint32_t tilePairs = BASE_TOPK * 2;
+    const uint64_t row = vec1ParamGm.GetValue(tail * paramNum_ + LD_ROW);
+    const uint64_t outputOffset = vec1ParamGm.GetValue(tail * paramNum_ + LD_DST);
+    const uint32_t pairsPerList = virTopK * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM;
+    const uint32_t tilePairs = BASE_TOPK * PivotCoarseSelectVec::VALUE_AND_INDEX_NUM;
     auto accumulator = ldToBeMrgBuf_.Get<float>();
     auto incoming = accumulator[pairsPerList];
     auto scratch = ldTmpBuf_.Get<float>();
@@ -600,8 +605,8 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessWideSplitLD()
     for (uint32_t next = core + 1; next < GetBlockNum(); ++next) {
         const uint32_t head = next * slotsPerCore;
         const uint32_t metadata = head * paramNum_;
-        if (vec1ParamGm.GetValue(metadata) != 1 ||
-            static_cast<uint64_t>(vec1ParamGm.GetValue(metadata + 5)) != row) {
+        if (vec1ParamGm.GetValue(metadata + LD_STATUS) != LD_SLOT_READY ||
+            static_cast<uint64_t>(vec1ParamGm.GetValue(metadata + LD_ROW)) != row) {
             break;
         }
         const uint64_t offset = static_cast<uint64_t>(head) * pairsPerList;
@@ -612,7 +617,7 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessWideSplitLD()
             PivotCoarseSelectVec::MergeSort(accumulator, virTopK, incoming, BASE_TOPK, scratch);
             SetWaitFlag<HardEvent::V_MTE2>(HardEvent::V_MTE2);
         }
-        if (vec1ParamGm.GetValue(metadata + 4) == 1) {
+        if (vec1ParamGm.GetValue(metadata + LD_ROW_END) == 1) {
             break;
         }
     }
@@ -621,7 +626,7 @@ __aicore__ inline void PivotCoarseSelectServiceVector<LIT>::ProcessWideSplitLD()
     for (uint32_t chunk = 0; chunk < pairsPerList; chunk += tilePairs) {
         PivotCoarseSelectVec::ExtractIndex(out, accumulator[chunk].template ReinterpretCast<uint32_t>(), BASE_TOPK);
         SetWaitFlag<HardEvent::V_MTE3>(HardEvent::V_MTE3);
-        DataCopy(indiceOutGm[outputOffset + chunk / 2], out.template ReinterpretCast<int32_t>(), BASE_TOPK);
+        DataCopy(indiceOutGm[outputOffset + chunk / PivotCoarseSelectVec::VALUE_AND_INDEX_NUM], out.template ReinterpretCast<int32_t>(), BASE_TOPK);
         SetWaitFlag<HardEvent::MTE3_V>(HardEvent::MTE3_V);
     }
 }

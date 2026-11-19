@@ -14,7 +14,7 @@ namespace PivotCoarseSelectCommon {
 constexpr uint32_t PIVOT_GROUP_SIZE = 4;
 constexpr uint32_t PIVOT_TOPK = 2048;
 constexpr uint32_t COARSE_TOPK = 4096;
-constexpr uint32_t MAX_COARSE_GROUP_SIZE = 16;
+constexpr uint32_t MAX_COARSE_GROUP_SIZE = 16; // Match the reference grouped API's limit.
 constexpr uint32_t INDEXER_HEAD_DIM = 128;
 constexpr uint32_t PIVOT_QUERY_WIDTH = 4096;
 constexpr uint32_t PIVOT_WEIGHT_WIDTH = 32;

@@ -32,10 +32,12 @@ __aicore__ inline void RunPivotCoarseSelect(__gm__ uint8_t *query, __gm__ uint8_
     const PivotCoarseSelectTilingData &tiling, TPipe &pipe)
 {
 #if (__CCE_AICORE__ == 220)
-    if (tiling.groupSize != 0 && !tiling.modifyLocalwindow) {
-        RunGroupedCoarse<LIT>(query, key, weights, queryLengths, keyLengths, blockTable, indices, values, aslk,
-            workspace, tiling, pipe);
-        return;
+    if constexpr (LIT::pageAttention && LIT::layout == LI_LAYOUT::TND) {
+        if (tiling.groupSize != 0 && !tiling.modifyLocalwindow) {
+            RunGroupedCoarse<LIT>(query, key, weights, queryLengths, keyLengths, blockTable, indices, values, aslk,
+                workspace, tiling, pipe);
+            return;
+        }
     }
     const bool reused = TryPivotReuse<LIT>(query, key, weights, queryLengths, keyLengths, blockTable,
         indices, values, workspace, tiling, pipe);
@@ -46,7 +48,7 @@ __aicore__ inline void RunPivotCoarseSelect(__gm__ uint8_t *query, __gm__ uint8_
         op.Process();
 #if (__CCE_AICORE__ == 220)
     }
-    if (tiling.modifyLocalwindow) {
+    if (tiling.groupSize != 0 && tiling.modifyLocalwindow) {
         WriteLocalLengths(queryLengths, keyLengths, aslk, tiling, pipe);
     }
 #endif

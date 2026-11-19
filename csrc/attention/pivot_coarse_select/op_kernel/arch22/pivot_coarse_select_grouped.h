@@ -78,7 +78,7 @@ __aicore__ inline bool WindowKeyAlreadySelected(const LocalTensor<int32_t> &ids,
     Mul(work, work, work, width);
     PipeBarrier<PIPE_V>();
 
-    constexpr uint32_t lanes = 32 / sizeof(int32_t); // One aligned vector block.
+    constexpr uint32_t lanes = PivotCoarseSelectVec::BLOCK_BYTES / sizeof(int32_t); // One aligned vector block.
     for (uint32_t half = width / 2; half >= lanes; half /= 2) {
         Add(work, work, work[half], half);
         PipeBarrier<PIPE_V>();
@@ -115,7 +115,7 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
         proxyLengths.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace + layout.history));
 
         TBuf<TPosition::VECCALC> rawBuf, sumBuf, convertedBuf, metaBuf;
-        pipe.InitBuffer(metaBuf, 32);
+        pipe.InitBuffer(metaBuf, PivotCoarseSelectVec::BLOCK_BYTES);
         auto meta = metaBuf.Get<int32_t>();
         GlobalTensor<Q> rawQ, proxyQ;
         GlobalTensor<W> rawW, proxyW;
@@ -170,7 +170,7 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
         TBuf<TPosition::VECCALC> idsBuf, scratchBuf, lengthBuf;
         pipe.InitBuffer(idsBuf, topk * sizeof(int32_t));
         pipe.InitBuffer(scratchBuf, topk * sizeof(int32_t));
-        pipe.InitBuffer(lengthBuf, 32);
+        pipe.InitBuffer(lengthBuf, PivotCoarseSelectVec::BLOCK_BYTES);
         auto ids = idsBuf.Get<int32_t>();
         auto scratch = scratchBuf.Get<int32_t>();
         auto length = lengthBuf.Get<int32_t>();
@@ -196,7 +196,7 @@ __aicore__ inline void RunGroupedCoarse(__gm__ uint8_t *query, __gm__ uint8_t *k
                 }
             }
             // Fill the aligned suffix with the vector pipe, plus any scalar tail in the prefix block.
-            const uint32_t lanes = 32 / sizeof(int32_t);
+            const uint32_t lanes = PivotCoarseSelectVec::BLOCK_BYTES / sizeof(int32_t);
             const uint32_t alignedSize = PivotCoarseSelectCommon::Align(size, lanes);
             for (uint32_t i = size; i < alignedSize; ++i) {
                 ids.SetValue(i, -1);
@@ -221,7 +221,7 @@ __aicore__ inline void WriteLocalLengths(__gm__ uint8_t *queryEnds, __gm__ uint8
 {
     if ASCEND_IS_AIV {
         pipe.Reset();
-        constexpr uint32_t LENGTH_TILE = 32 / sizeof(int32_t);
+        constexpr uint32_t LENGTH_TILE = PivotCoarseSelectVec::BLOCK_BYTES / sizeof(int32_t);
         TBuf<TPosition::VECCALC> lengthBuf;
         pipe.InitBuffer(lengthBuf, LENGTH_TILE * sizeof(int32_t));
         auto lengths = lengthBuf.Get<int32_t>();

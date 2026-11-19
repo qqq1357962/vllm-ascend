@@ -13,8 +13,8 @@
  * \brief
  */
 
-#ifndef TEMPLATE_TILING_KEY_LI_H_
-#define TEMPLATE_TILING_KEY_LI_H_
+#ifndef PIVOT_COARSE_SELECT_TEMPLATE_TILING_KEY_H
+#define PIVOT_COARSE_SELECT_TEMPLATE_TILING_KEY_H
 
 #include "ascendc/host_api/tiling/template_argument.h"
 

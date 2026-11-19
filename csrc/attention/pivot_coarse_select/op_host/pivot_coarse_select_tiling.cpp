@@ -22,8 +22,8 @@ using namespace AscendC;
 using std::map;
 using std::string;
 namespace optiling {
-// --------------------------PivotPivotCoarseSelectInfoParser类成员函数定义-------------------------------------
-ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckRequiredInOutExistence() const
+// --------------------------PivotCoarseSelectInfoParser类成员函数定义-------------------------------------
+ge::graphStatus PivotCoarseSelectInfoParser::CheckRequiredInOutExistence() const
 {
     OP_CHECK_IF(opParamInfo_.query.shape == nullptr, OP_LOGE(opName_, "Shape of tensor query is nullptr"),
                return ge::GRAPH_FAILED);
@@ -49,7 +49,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckRequiredInOutExistence() 
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckRequiredAttrExistence() const
+ge::graphStatus PivotCoarseSelectInfoParser::CheckRequiredAttrExistence() const
 {
     OP_CHECK_IF(opParamInfo_.layOut == nullptr, OP_LOGE(opName_, "attr layout_query is nullptr"),
                return ge::GRAPH_FAILED);
@@ -66,7 +66,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckRequiredAttrExistence() c
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckRequiredParaExistence() const
+ge::graphStatus PivotCoarseSelectInfoParser::CheckRequiredParaExistence() const
 {
     if (CheckRequiredInOutExistence() != ge::GRAPH_SUCCESS || CheckRequiredAttrExistence() != ge::GRAPH_SUCCESS) {
         return ge::GRAPH_FAILED;
@@ -75,7 +75,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckRequiredParaExistence() c
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetOpName()
+ge::graphStatus PivotCoarseSelectInfoParser::GetOpName()
 {
     if (context_->GetNodeName() == nullptr) {
         OP_LOGE("PivotCoarseSelect", "opName got from TilingContext is nullptr");
@@ -85,7 +85,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetOpName()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetNpuInfo()
+ge::graphStatus PivotCoarseSelectInfoParser::GetNpuInfo()
 {
     platformInfo_ = context_->GetPlatformInfo();
     OP_CHECK_IF(platformInfo_ == nullptr, OP_LOGE(opName_, "GetPlatformInfo is nullptr."), return ge::GRAPH_FAILED);
@@ -111,7 +111,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetNpuInfo()
     return ge::GRAPH_SUCCESS;
 }
 
-void PivotPivotCoarseSelectInfoParser::GetOptionalInputParaInfo()
+void PivotCoarseSelectInfoParser::GetOptionalInputParaInfo()
 {
     opParamInfo_.actualSeqLengthsQ.tensor = context_->GetOptionalInputTensor(ACTUAL_SEQ_Q_INDEX);
     opParamInfo_.actualSeqLengthsQ.desc = context_->GetOptionalInputDesc(ACTUAL_SEQ_Q_INDEX);
@@ -121,27 +121,27 @@ void PivotPivotCoarseSelectInfoParser::GetOptionalInputParaInfo()
     opParamInfo_.blockTable.desc = context_->GetOptionalInputDesc(BLOCK_TABLE_INDEX);
 }
 
-void PivotPivotCoarseSelectInfoParser::GetInputParaInfo()
+void PivotCoarseSelectInfoParser::GetInputParaInfo()
 {
     opParamInfo_.query.desc = context_->GetInputDesc(QUERY_INDEX);
     opParamInfo_.query.shape = context_->GetInputShape(QUERY_INDEX);
     opParamInfo_.key.desc = context_->GetInputDesc(KEY_INDEX);
     opParamInfo_.key.shape = context_->GetInputShape(KEY_INDEX);
-    opParamInfo_.weights.desc = context_->GetInputDesc(WEIGTHS_INDEX);
-    opParamInfo_.weights.shape = context_->GetInputShape(WEIGTHS_INDEX);
+    opParamInfo_.weights.desc = context_->GetInputDesc(WEIGHTS_INDEX);
+    opParamInfo_.weights.shape = context_->GetInputShape(WEIGHTS_INDEX);
     GetOptionalInputParaInfo();
 }
 
-void PivotPivotCoarseSelectInfoParser::GetOutputParaInfo()
+void PivotCoarseSelectInfoParser::GetOutputParaInfo()
 {
     opParamInfo_.attenOut.desc = context_->GetOutputDesc(PIVOT_COARSE_SELECT);
     opParamInfo_.attenOut.shape = context_->GetOutputShape(PIVOT_COARSE_SELECT);
-    opParamInfo_.valuesOut.desc = context_->GetOutputDesc(LIGHTNING_VALUES);
-    opParamInfo_.valuesOut.shape = context_->GetOutputShape(LIGHTNING_VALUES);
+    opParamInfo_.valuesOut.desc = context_->GetOutputDesc(SPARSE_VALUES_INDEX);
+    opParamInfo_.valuesOut.shape = context_->GetOutputShape(SPARSE_VALUES_INDEX);
     opParamInfo_.aslkShape = context_->GetOutputShape(ASLK_INDEX);
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckAttrParaInfo()
+ge::graphStatus PivotCoarseSelectInfoParser::GetAndCheckAttrParaInfo()
 {
     auto attrs = context_->GetAttrs();
     OP_CHECK_IF(attrs == nullptr, OPS_REPORT_VECTOR_INNER_ERR(context_->GetNodeName(), "attrs got from ge is nullptr"),
@@ -158,6 +158,9 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckAttrParaInfo()
     opParamInfo_.proxyMode = *attrs->GetAttrPointer<int32_t>(ATTR_PROXY_MODE_INDEX);
     opParamInfo_.modifyLocalwindow = *attrs->GetAttrPointer<bool>(ATTR_MODIFY_LOCALWINDOW_INDEX);
     const bool coarse = opParamInfo_.groupSize != 0;
+    OP_CHECK_IF(!coarse && opParamInfo_.modifyLocalwindow,
+                OP_LOGE(opName_, "A local-window update requires a nonzero group_size."),
+                return ge::GRAPH_FAILED);
     if (coarse) {
         OP_CHECK_IF(opParamInfo_.groupSize < 1 ||
                         opParamInfo_.groupSize > PivotCoarseSelectCommon::MAX_COARSE_GROUP_SIZE ||
@@ -167,6 +170,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckAttrParaInfo()
                                                         PivotCoarseSelectCommon::PIVOT_GROUP_SIZE)) ||
                         (*opParamInfo_.sparseCount != PivotCoarseSelectCommon::PIVOT_TOPK &&
                          *opParamInfo_.sparseCount != PivotCoarseSelectCommon::COARSE_TOPK) ||
+                        *opParamInfo_.sparseMode != (opParamInfo_.modifyLocalwindow ? SPARSE_MODE_LOWER : 0) ||
                         std::string(opParamInfo_.layOut) != "TND" ||
                         std::string(opParamInfo_.layOutKey) != "PA_BSND" || *opParamInfo_.returnValue,
                     OP_LOGE(opName_, "Invalid grouped coarse-select attributes."),
@@ -219,7 +223,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckAttrParaInfo()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetOpParaInfo()
+ge::graphStatus PivotCoarseSelectInfoParser::GetOpParaInfo()
 {
     GetInputParaInfo();
     GetOutputParaInfo();
@@ -229,7 +233,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetOpParaInfo()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckInOutDataType()
+ge::graphStatus PivotCoarseSelectInfoParser::GetAndCheckInOutDataType()
 {
     inputQType_ = opParamInfo_.query.desc->GetDataType();
     inputKType_ = opParamInfo_.key.desc->GetDataType();
@@ -269,13 +273,13 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckInOutDataType()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetQueryKeyAndOutLayout()
+ge::graphStatus PivotCoarseSelectInfoParser::GetQueryKeyAndOutLayout()
 {
     // 获取query,key的Layout基准值
-    const map<string, PivotDataLayout> layoutMap = {
-        {"BSND", PivotDataLayout::BSND},
-        {"TND", PivotDataLayout::TND},
-        {"PA_BSND", PivotDataLayout::BnBsND}
+    const map<string, CoarseDataLayout> layoutMap = {
+        {"BSND", CoarseDataLayout::BSND},
+        {"TND", CoarseDataLayout::TND},
+        {"PA_BSND", CoarseDataLayout::BnBsND}
     };
 
     std::string layout(opParamInfo_.layOut);
@@ -293,9 +297,9 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetQueryKeyAndOutLayout()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckOptionalInput()
+ge::graphStatus PivotCoarseSelectInfoParser::GetAndCheckOptionalInput()
 {
-    if (kLayout_ == PivotDataLayout::BnBsND) {
+    if (kLayout_ == CoarseDataLayout::BnBsND) {
         OP_CHECK_IF(opParamInfo_.blockTable.tensor == nullptr,
                    OP_LOGE(opName_, "when layout_key is PA_BSND, input block_table must not be null"),
                    return ge::GRAPH_FAILED);
@@ -305,7 +309,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckOptionalInput()
             return ge::GRAPH_FAILED);
         OP_CHECK_IF(opParamInfo_.blockTable.desc->GetDataType() != ge::DT_INT32,
                    OP_LOGE(opName_, "input block_table data type only support int32"), return ge::GRAPH_FAILED);
-    } else if (kLayout_ == PivotDataLayout::TND) {
+    } else if (kLayout_ == CoarseDataLayout::TND) {
         OP_CHECK_IF(opParamInfo_.actualSeqLengths.tensor == nullptr,
                    OP_LOGE(opName_, "when layout_key is TND, input actual_seq_lengths_key must not be null"),
                    return ge::GRAPH_FAILED);
@@ -318,7 +322,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckOptionalInput()
                    opParamInfo_.actualSeqLengths.desc->GetDataType() != ge::DT_INT32,
                OP_LOGE(opName_, "input actual_seq_lengths_key data type only support int32"),
                return ge::GRAPH_FAILED);
-    if (qLayout_ == PivotDataLayout::TND) {
+    if (qLayout_ == CoarseDataLayout::TND) {
         OP_CHECK_IF(opParamInfo_.actualSeqLengthsQ.tensor == nullptr,
                    OP_LOGE(opName_, "when layout_query is TND, input actual_seq_lengths_query must not be null"),
                    return ge::GRAPH_FAILED);
@@ -327,13 +331,13 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckOptionalInput()
                    opParamInfo_.actualSeqLengthsQ.desc->GetDataType() != ge::DT_INT32,
                OP_LOGE(opName_, "input actual_seq_lengths_query data type only support int32"),
                return ge::GRAPH_FAILED);
-    OP_CHECK_IF(kLayout_ != PivotDataLayout::BnBsND && opParamInfo_.blockTable.tensor != nullptr,
+    OP_CHECK_IF(kLayout_ != CoarseDataLayout::BnBsND && opParamInfo_.blockTable.tensor != nullptr,
                    OP_LOGE(opName_, "when key layout is not PA_BSND, input block_table must be null"),
                    return ge::GRAPH_FAILED);
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckShapeDim()
+ge::graphStatus PivotCoarseSelectInfoParser::CheckShapeDim()
 {
     OP_CHECK_IF((opParamInfo_.blockTable.tensor != nullptr) &&
                    (opParamInfo_.blockTable.tensor->GetStorageShape().GetDimNum() != DIM_NUM_TWO),
@@ -346,10 +350,10 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckShapeDim()
     uint32_t valuesOutShapeDim = opParamInfo_.valuesOut.shape->GetStorageShape().GetDimNum();
     uint32_t qExpectShapeDim = DIM_NUM_FOUR;
     uint32_t kExpectShapeDim = DIM_NUM_FOUR;
-    if (qLayout_ == PivotDataLayout::TND) {
+    if (qLayout_ == CoarseDataLayout::TND) {
         qExpectShapeDim = DIM_NUM_THREE;
     }
-    if (kLayout_ == PivotDataLayout::TND) {
+    if (kLayout_ == CoarseDataLayout::TND) {
         kExpectShapeDim = DIM_NUM_THREE;
     }
     OP_CHECK_IF(kShapeDim != kExpectShapeDim,
@@ -377,9 +381,9 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckShapeDim()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetN1Size()
+ge::graphStatus PivotCoarseSelectInfoParser::GetN1Size()
 {
-    if (qLayout_ == PivotDataLayout::BSND) {
+    if (qLayout_ == CoarseDataLayout::BSND) {
         n1Size_ = static_cast<uint32_t>(opParamInfo_.query.shape->GetStorageShape().GetDim(DIM_IDX_TWO));
     } else {
         // TND
@@ -393,7 +397,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetN1Size()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetActualSeqLenSize(uint32_t &size, const gert::Tensor *tensor,
+ge::graphStatus PivotCoarseSelectInfoParser::GetActualSeqLenSize(uint32_t &size, const gert::Tensor *tensor,
                                                   const std::string &actualSeqLenName) const
 {
     size = static_cast<uint32_t>(tensor->GetShapeSize());
@@ -404,9 +408,9 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetActualSeqLenSize(uint32_t &
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckN2Size()
+ge::graphStatus PivotCoarseSelectInfoParser::GetAndCheckN2Size()
 {
-    uint32_t n2Index = (kLayout_ == PivotDataLayout::TND) ? DIM_IDX_ONE : DIM_IDX_TWO;
+    uint32_t n2Index = (kLayout_ == CoarseDataLayout::TND) ? DIM_IDX_ONE : DIM_IDX_TWO;
     n2Size_ = static_cast<uint32_t>(opParamInfo_.key.shape->GetStorageShape().GetDim(n2Index));
     OP_LOGI(context_->GetNodeName(), "n2Size_ is %d", n2Size_);
     OP_CHECK_IF(n2Size_ != 1, OP_LOGE(opName_, "key shape[%u] is numhead, only support 1.", n2Index),
@@ -414,7 +418,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckN2Size()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetGSize()
+ge::graphStatus PivotCoarseSelectInfoParser::GetGSize()
 {
     if (n1Size_ % n2Size_ != 0) {
         OP_LOGE(opName_, "input query's head_num %u can not be a multiple of key's head_num %u.", n1Size_, n2Size_);
@@ -425,12 +429,12 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetGSize()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetBatchSize()
+ge::graphStatus PivotCoarseSelectInfoParser::GetBatchSize()
 {
     // 获取B基准值
     // 1、非TND/NTD时, 以query的batch_size维度为基准;
     // 2、TND/NTD时, actual_seq_lens_q必须传入, 以actual_seq_lens_q数组的长度为B轴大小
-    if ((qLayout_ == PivotDataLayout::TND)) {
+    if ((qLayout_ == CoarseDataLayout::TND)) {
         return GetActualSeqLenSize(bSize_, opParamInfo_.actualSeqLengthsQ.tensor, "input actual_seq_lengths_query");
     } else { // BSND
         bSize_ = opParamInfo_.query.shape->GetStorageShape().GetDim(0);
@@ -438,17 +442,17 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetBatchSize()
     }
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetHeadDim()
+ge::graphStatus PivotCoarseSelectInfoParser::GetHeadDim()
 {
     // 以query的D维度为基准
     uint32_t dIndex = DIM_IDX_TWO;
     // 根据layout确定D维度在shape中的位置
     switch (qLayout_) {
-        case PivotDataLayout::TND:
+        case CoarseDataLayout::TND:
             // TND格式: [Total, N, D] -> D是第2维(索引2)
             dIndex = DIM_IDX_TWO;
             break;
-        case PivotDataLayout::BSND:
+        case CoarseDataLayout::BSND:
             // BSND格式: [Batch, SeqLen, N, D] -> D是第3维(索引3)
             dIndex = DIM_IDX_THREE;
             break;
@@ -463,15 +467,15 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetHeadDim()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetS1Size()
+ge::graphStatus PivotCoarseSelectInfoParser::GetS1Size()
 {
-    if (qLayout_ == PivotDataLayout::BSND) {
+    if (qLayout_ == CoarseDataLayout::BSND) {
         s1Size_ = opParamInfo_.query.shape->GetStorageShape().GetDim(1);
     }
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckBlockSize()
+ge::graphStatus PivotCoarseSelectInfoParser::GetAndCheckBlockSize()
 {
     blockSize_ = static_cast<uint32_t>(opParamInfo_.key.shape->GetStorageShape().GetDim(1));
     OP_LOGI(context_->GetNodeName(), "blockSize_ is %d", blockSize_);
@@ -483,7 +487,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetAndCheckBlockSize()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckBlockCount()
+ge::graphStatus PivotCoarseSelectInfoParser::CheckBlockCount()
 {
     int32_t blockCount_ = static_cast<uint32_t>(opParamInfo_.key.shape->GetStorageShape().GetDim(0));
     OP_CHECK_IF((blockCount_ == 0),
@@ -492,7 +496,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::CheckBlockCount()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetS2SizeForPageAttention()
+ge::graphStatus PivotCoarseSelectInfoParser::GetS2SizeForPageAttention()
 {
     if (GetAndCheckBlockSize() != ge::GRAPH_SUCCESS) {
         return ge::GRAPH_FAILED;
@@ -507,26 +511,26 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::GetS2SizeForPageAttention()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::GetS2Size()
+ge::graphStatus PivotCoarseSelectInfoParser::GetS2Size()
 {
     // 获取S2基准值
     // 1、BATCH_CONTINUOUS时, 从key的S轴获取
     // 3、PAGE_ATTENTION时, S2 = block_table.dim1 * block_size
-    if (kLayout_ == PivotDataLayout::BnBsND) {
+    if (kLayout_ == CoarseDataLayout::BnBsND) {
         return GetS2SizeForPageAttention();
-    } else if (kLayout_ == PivotDataLayout::TND) {
+    } else if (kLayout_ == CoarseDataLayout::TND) {
         s2Size_ = opParamInfo_.key.shape->GetStorageShape().GetDim(0);
-    } else if (kLayout_ == PivotDataLayout::BSND) {
+    } else if (kLayout_ == CoarseDataLayout::BSND) {
         s2Size_ = opParamInfo_.key.shape->GetStorageShape().GetDim(1);
     }
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::ValidateInputShapesMatchQtnd()
+ge::graphStatus PivotCoarseSelectInfoParser::ValidateInputShapesMatchQtnd()
 {
     // -----------------------check BatchSize-------------------
     // bSize_ 来源于act_seq_q
-    if (kLayout_ == PivotDataLayout::TND) {
+    if (kLayout_ == CoarseDataLayout::TND) {
         OP_CHECK_IF(
         (opParamInfo_.actualSeqLengths.tensor->GetShapeSize() != bSize_),
             OP_LOGE(opName_,
@@ -573,18 +577,18 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::ValidateInputShapesMatchQtnd()
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::ValidateInputShapesMatchQbsnd()
+ge::graphStatus PivotCoarseSelectInfoParser::ValidateInputShapesMatchQbsnd()
 {
     // -----------------------check BatchSize-------------------
     // bSize_ 来源于query
-    if (kLayout_ == PivotDataLayout::BnBsND) {
+    if (kLayout_ == CoarseDataLayout::BnBsND) {
         OP_CHECK_IF((opParamInfo_.blockTable.tensor->GetStorageShape().GetDim(0) != bSize_) ||
                     (opParamInfo_.actualSeqLengths.tensor->GetShapeSize() != bSize_),
                 OP_LOGE(opName_, "BSND case input query, actual_seq_lengths_key, block_table dim 0 are %u, %ld, %ld respectively, they must be same.",
                     bSize_, opParamInfo_.actualSeqLengths.tensor->GetShapeSize(),
                     opParamInfo_.blockTable.tensor->GetStorageShape().GetDim(0)),
                 return ge::GRAPH_FAILED);
-    } else if (kLayout_ == PivotDataLayout::BSND) {
+    } else if (kLayout_ == CoarseDataLayout::BSND) {
         OP_CHECK_IF(opParamInfo_.key.shape->GetStorageShape().GetDim(0) != bSize_,
                 OP_LOGE(opName_, "BSND case input query, key dim 0 are %u, %ld respectively, they must be same.",
                     bSize_, opParamInfo_.key.shape->GetStorageShape().GetDim(0)),
@@ -626,7 +630,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::ValidateInputShapesMatchQbsnd(
     return ge::GRAPH_SUCCESS;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::ValidateInputShapesMatch()
+ge::graphStatus PivotCoarseSelectInfoParser::ValidateInputShapesMatch()
 {
     /*
     TND:
@@ -649,7 +653,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::ValidateInputShapesMatch()
     */
     uint32_t queryWeightsN1Dim = 1;
     uint32_t outN2Dim = 1;
-    if (qLayout_ == PivotDataLayout::TND) {
+    if (qLayout_ == CoarseDataLayout::TND) {
         if (ValidateInputShapesMatchQtnd() != ge::GRAPH_SUCCESS) {
             return ge::GRAPH_FAILED;
         }
@@ -664,7 +668,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::ValidateInputShapesMatch()
     OP_CHECK_IF((opParamInfo_.weights.shape->GetStorageShape().GetDim(queryWeightsN1Dim) != n1Size_),
                OP_LOGE(opName_, "input query, weight shape dim N1 must be same."), return ge::GRAPH_FAILED);
     // -----------------------check D-------------------
-    uint32_t keyDDim = kLayout_ == PivotDataLayout::TND ? DIM_IDX_TWO : DIM_IDX_THREE;
+    uint32_t keyDDim = kLayout_ == CoarseDataLayout::TND ? DIM_IDX_TWO : DIM_IDX_THREE;
     OP_CHECK_IF((opParamInfo_.key.shape->GetStorageShape().GetDim(keyDDim) != headDim_),
                OP_LOGE(opName_, "input query, key shape last dim must be same."), return ge::GRAPH_FAILED);
     // -----------------------check N2-------------------
@@ -695,7 +699,7 @@ ge::graphStatus PivotPivotCoarseSelectInfoParser::ValidateInputShapesMatch()
     return ge::GRAPH_SUCCESS;
 }
 
-void PivotPivotCoarseSelectInfoParser::GenerateInfo(PivotPivotCoarseSelectTilingInfo &liInfo)
+void PivotCoarseSelectInfoParser::GenerateInfo(PivotCoarseSelectTilingInfo &liInfo)
 {
     liInfo.opName = opName_;
     liInfo.platformInfo = platformInfo_;
@@ -729,7 +733,7 @@ void PivotPivotCoarseSelectInfoParser::GenerateInfo(PivotPivotCoarseSelectTiling
     liInfo.inputKLayout = kLayout_;
 }
 
-ge::graphStatus PivotPivotCoarseSelectInfoParser::ParseAndCheck(PivotPivotCoarseSelectTilingInfo &liInfo)
+ge::graphStatus PivotCoarseSelectInfoParser::ParseAndCheck(PivotCoarseSelectTilingInfo &liInfo)
 {
     if (ge::GRAPH_SUCCESS != GetOpName() || ge::GRAPH_SUCCESS != GetNpuInfo() || ge::GRAPH_SUCCESS != GetOpParaInfo() ||
         ge::GRAPH_SUCCESS != CheckRequiredParaExistence()) {
@@ -766,7 +770,7 @@ static ge::graphStatus TilingPrepareForPivotCoarseSelect(gert::TilingParseContex
 }
 
 // --------------------------PivotCoarseSelectTiling类成员函数定义-----------------------
-ge::graphStatus PivotCoarseSelectTiling::DoTiling(PivotPivotCoarseSelectTilingInfo *tilingInfo)
+ge::graphStatus PivotCoarseSelectTiling::DoTiling(PivotCoarseSelectTilingInfo *tilingInfo)
 {
     // -------------set blockdim-----------------
     auto ascendcPlatform = platform_ascendc::PlatformAscendC(tilingInfo->platformInfo);
@@ -815,7 +819,7 @@ ge::graphStatus PivotCoarseSelectTiling::DoTiling(PivotPivotCoarseSelectTilingIn
         (tilingInfo->sparseCount == PivotCoarseSelectCommon::PIVOT_TOPK ||
          (params.modifyLocalwindow && tilingInfo->sparseCount == PivotCoarseSelectCommon::COARSE_TOPK)) &&
         tilingInfo->sparseMode == 3 && !tilingInfo->returnValue &&
-        (tilingInfo->inputQLayout == PivotDataLayout::TND || tilingInfo->bSize == 1)) {
+        (tilingInfo->inputQLayout == CoarseDataLayout::TND || tilingInfo->bSize == 1)) {
         uint64_t rows = context_->GetInputShape(0)->GetStorageShape().GetShapeSize() /
                         PivotCoarseSelectCommon::PIVOT_QUERY_WIDTH;
         workspaceSize += PivotCoarseSelectCommon::PivotWorkspace(rows, tilingInfo->bSize, tilingInfo->sparseCount).native;
@@ -865,8 +869,8 @@ ge::graphStatus TilingForPivotCoarseSelect(gert::TilingContext *context)
 {
     OP_CHECK_IF(context == nullptr, OPS_REPORT_VECTOR_INNER_ERR("PivotCoarseSelect", "Tiling context is null."),
                return ge::GRAPH_FAILED);
-    PivotPivotCoarseSelectTilingInfo liInfo;
-    PivotPivotCoarseSelectInfoParser infoParser(context);
+    PivotCoarseSelectTilingInfo liInfo;
+    PivotCoarseSelectInfoParser infoParser(context);
     if (infoParser.ParseAndCheck(liInfo) != ge::GRAPH_SUCCESS) {
         return ge::GRAPH_FAILED;
     }
@@ -877,6 +881,6 @@ ge::graphStatus TilingForPivotCoarseSelect(gert::TilingContext *context)
 // --------------------------Tiling函数及TilingPrepare函数注册--------
 IMPL_OP_OPTILING(PivotCoarseSelect)
     .Tiling(TilingForPivotCoarseSelect)
-    .TilingParse<PivotPivotCoarseSelectCompileInfo>(TilingPrepareForPivotCoarseSelect);
+    .TilingParse<PivotCoarseSelectCompileInfo>(TilingPrepareForPivotCoarseSelect);
 
 } // namespace optiling
