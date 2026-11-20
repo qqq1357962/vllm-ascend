@@ -32,8 +32,8 @@ constexpr uint32_t LD_PARAM_NUM = 16;
 constexpr uint32_t EVENTID_V_TO_MTE2_PING = 0;
 constexpr uint32_t EVENTID_V_TO_MTE2_PONG = 1;
 constexpr uint32_t EVENTID_V_TO_MTE2_TMPUB = 2;
-constexpr uint32_t EVENTID_V_TO_MTE2_LOOKAHEAD = 3;
-constexpr uint32_t NATIVE_SCORE_SLOTS = 2;
+// Use a separate DMA event for the tile staged while the main buffers are merging.
+constexpr uint32_t EVENTID_V_TO_MTE2_LOOKAHEAD = EVENT_ID3;
 
 // 主模板：Q_T必选，W_T可选（默认void），无论W_T传什么，默认weightsType=Q_T
 template<typename Q_T, typename W_T = void>
@@ -389,7 +389,7 @@ __aicore__ inline bool PivotCoarseSelectServiceVector<LIT>::ProcessVec(const Piv
     int32_t cuBaseS2Idx = info.s2Idx * s2BaseSize_;
 
     // 计算基本块基地址偏移 偶数循环 -> 0 + aic_offset  奇数循环 -> 512*512 + aic_offset
-    const uint32_t scoreSlot = info.pairedRows ? info.loop & (constInfo_.scoreSlots - 1) : info.loop % 2;
+    const uint32_t scoreSlot = info.pairedRows ? info.loop & (constInfo_.scoreSlots - 1) : info.loop % NATIVE_SCORE_SLOTS;
     int64_t mmGmOffset = scoreSlot * (constInfo_.mBaseSizeAlign * s2BaseSize_);
     // (B,S1,N1,1);(T,N1,1) -> (B,S1,N2,G,1) 当前只切分到S1轴
     int64_t weightGmOffset = info.tensorWeightsOffset + cuBaseS1Idx * kHeadNum_ * gSize_;

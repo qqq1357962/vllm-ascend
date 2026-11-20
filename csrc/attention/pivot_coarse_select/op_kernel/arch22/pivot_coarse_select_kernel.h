@@ -444,7 +444,7 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::Init(__gm__ uint8_t *query,
         !tiling->modifyLocalwindow && !pairCoarseRows;
     if (pairCoarseRows) {
         // Each slot stores two proxy rows. Four slots still fit the original M=512 double-buffer budget.
-        constInfo.scoreSlots = 2 * WS_DOUBLE;
+        constInfo.scoreSlots = 2 * NATIVE_SCORE_SLOTS;
         constInfo.mBaseSizeAlign = 2 * PivotCoarseSelectCommon::Align<uint32_t>(constInfo.gSize, BLOCK_CUBE_SIZE);
     } else {
         SplitCore(aiCoreIdx, usedCoreNum, splitCoreInfo);

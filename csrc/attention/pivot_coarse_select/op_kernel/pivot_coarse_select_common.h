@@ -70,6 +70,9 @@ struct RunInfo {
     uint32_t scoreOffset = 0;
 };
 
+// The native LightningIndexer score workspace uses two Cube output slots.
+constexpr uint32_t NATIVE_SCORE_SLOTS = 2;
+
 struct ConstInfo {
     __gm__ const PivotGroup *pivotGroups = nullptr;
     // CUBE与VEC核间同步的模式
@@ -103,7 +106,7 @@ struct ConstInfo {
     uint32_t mBaseSizeAlign = 1ULL;
     uint32_t s1BaseSize = 1ULL;
     uint32_t s2BaseSize = 1ULL;
-    uint32_t scoreSlots = 2; // The native LI pipeline double-buffers Cube output.
+    uint32_t scoreSlots = NATIVE_SCORE_SLOTS;
 
     uint64_t batchSize = 0ULL;
     uint64_t gSize = 0ULL;

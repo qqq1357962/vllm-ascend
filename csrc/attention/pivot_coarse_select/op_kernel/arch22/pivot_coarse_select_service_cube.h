@@ -388,7 +388,7 @@ __aicore__ inline void PivotCoarseSelectServiceCube<LIT>::Fixp(uint64_t s1gGmOff
     intriParams.unitFlag = 0b11; // 3 unitflag
     intriParams.reluPre = 1;
     AscendC::SetFixpipeNz2ndFlag(1, 1, 1);
-    const uint32_t slot = runInfo.pairedRows ? runInfo.loop & (constInfo_.scoreSlots - 1) : runInfo.loop % 2;
+    const uint32_t slot = runInfo.pairedRows ? runInfo.loop & (constInfo_.scoreSlots - 1) : runInfo.loop % NATIVE_SCORE_SLOTS;
     AscendC::DataCopy(mm1ResGm_[slot * constInfo_.mBaseSizeAlign * constInfo_.s2BaseSize +
                                 runInfo.scoreOffset + s1gGmOffset * intriParams.dstStride + s2GmOffset],
                       cL0_[(l0BufIdx_ % L0_BUF_NUM) * L0C_BUFFER_OFFSET], intriParams);
