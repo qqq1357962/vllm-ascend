@@ -145,6 +145,8 @@ protected:
     // ================================Process functions================================
     __aicore__ inline void ProcessMain();
     __aicore__ inline void ProcessCoarsePairs();
+    __aicore__ inline void SetPairVectorInfo(PivotCoarseSelectCommon::RunInfo &info, uint32_t row,
+        uint32_t s2, uint32_t length, uint32_t lane, uint32_t loop, uint32_t sharedLength);
     __aicore__ inline void SetPairRunInfo(PivotCoarseSelectCommon::RunInfo &info, uint32_t row,
         uint32_t s2, uint32_t length, uint32_t lane, uint32_t loop);
     __aicore__ inline void ProcessBaseBlock(uint32_t loop, uint64_t s2LoopIdx, PivotCoarseSelectCommon::RunInfo &runInfo);
@@ -680,6 +682,20 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::SetPairRunInfo(PivotCoarseS
 }
 
 template <typename LIT>
+__aicore__ inline void PivotCoarseSelectKernel<LIT>::SetPairVectorInfo(
+    PivotCoarseSelectCommon::RunInfo &info, uint32_t row, uint32_t s2, uint32_t length,
+    uint32_t lane, uint32_t loop, uint32_t sharedLength)
+{
+    SetPairRunInfo(info, row, s2, length, lane, loop);
+    if (sharedLength != 0) {
+        const uint32_t copied = Min(sharedLength - s2 * constInfo.s2BaseSize, constInfo.s2BaseSize);
+        info.actualSingleProcessSInnerSizeAlign = PivotCoarseSelectCommon::Align(
+            copied, PivotCoarseSelectCommon::ConstInfo::BUFFER_SIZE_BYTE_32B);
+        info.scoreOffset = lane * constInfo.gSize * info.actualSingleProcessSInnerSizeAlign;
+    }
+}
+
+template <typename LIT>
 __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessCoarsePairs()
 {
     if (aiCoreIdx >= usedCoreNum) {
@@ -709,6 +725,7 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessCoarsePairs()
         const uint32_t maxLen = Max(k0, k1);
         const uint32_t steps = CeilDiv(maxLen, constInfo.s2BaseSize);
         const bool shared = sharedCoarsePairs != nullptr && sharedCoarsePairs[pair] != 0;
+        bool prefetched = false;
         for (uint32_t s2 = 0; s2 < steps; ++s2, ++loop) {
             const uint32_t offset = s2 * constInfo.s2BaseSize;
             if ASCEND_IS_AIC {
@@ -731,20 +748,23 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessCoarsePairs()
                 }
                 CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_FIX>(constInfo.syncC1V1);
             } else {
-                CrossCoreWaitFlag(constInfo.syncC1V1);
+                if (!prefetched) {
+                    CrossCoreWaitFlag(constInfo.syncC1V1);
+                }
                 const uint32_t length = vectorLane == 0 ? k0 : k1;
                 if (offset < length) {
-                    PivotCoarseSelectCommon::RunInfo info;
-                    SetPairRunInfo(info, first + vectorLane, s2, length, vectorLane, loop);
-                    if (shared) {
-                        const uint32_t copied = Min(maxLen - offset, constInfo.s2BaseSize);
-                        info.actualSingleProcessSInnerSizeAlign = PivotCoarseSelectCommon::Align(
-                            copied, PivotCoarseSelectCommon::ConstInfo::BUFFER_SIZE_BYTE_32B);
-                        info.scoreOffset = vectorLane * constInfo.gSize * info.actualSingleProcessSInnerSizeAlign;
+                    const uint32_t sharedLength = shared ? maxLen : 0;
+                    PivotCoarseSelectCommon::RunInfo info, next;
+                    SetPairVectorInfo(info, first + vectorLane, s2, length, vectorLane, loop, sharedLength);
+                    const bool hasNext = offset + constInfo.s2BaseSize < length;
+                    if (hasNext) {
+                        SetPairVectorInfo(next, first + vectorLane, s2 + 1, length, vectorLane,
+                            loop + 1, sharedLength);
                     }
-                    vectorService.ProcessVec(info);
+                    prefetched = vectorService.template ProcessVec<true>(info, hasNext ? &next : nullptr, prefetched);
+                } else {
+                    CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
                 }
-                CrossCoreSetFlag<PivotCoarseSelectCommon::ConstInfo::FIA_SYNC_MODE2, PIPE_MTE2>(constInfo.syncV1C1);
             }
         }
     }
