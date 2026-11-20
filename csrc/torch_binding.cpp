@@ -40,6 +40,7 @@
 #include "gmm/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_torch_adpt.h"
 #include "attention/lightning_indexer/lightning_indexer_torch_adpt.h"
 #include "attention/pivot_lightning_indexer/pivot_lightning_indexer_torch_adpt.h"
+#include "attention/pivot_coarse_select/pivot_coarse_select_torch_adpt.h"
 #include "moe/moe_gating_top_k/moe_gating_top_k_torch_adpt.h"
 #include "attention/sparse_flash_attention/sparse_flash_attention_torch_adpt.h"
 #include "attention/sparse_flash_mla/sparse_flash_mla_torch_adpt.h"
@@ -3138,6 +3139,21 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         ") -> (Tensor sparse_indices, Tensor sparse_values)"
     );
     ops.impl("npu_pivot_lightning_indexer", torch::kPrivateUse1, &vllm_ascend::npu_pivot_lightning_indexer);
+
+    // With local updates, the metadata is request-major and the result is token-major.
+    // Otherwise the metadata and result each have one row per coarse group.
+    ops.def(
+        "npu_indexer_coarse_screen("
+            "Tensor q_bar, Tensor w_bar, Tensor key, "
+            "*, "
+            "Tensor? actual_seq_lengths_query=None, "
+            "Tensor? actual_seq_lengths_key=None, "
+            "Tensor block_table, "
+            "int coarse_count=4096, int has_window=1, int group_size=4, "
+            "int proxy_mode=0, bool is_modify_localwindow=False"
+        ") -> (Tensor candidates, Tensor aslk)"
+    );
+    ops.impl("npu_indexer_coarse_screen", torch::kPrivateUse1, &vllm_ascend::npu_indexer_coarse_screen);
 
     // k2q_csr: q2k -> k2q CSR (Meta/Hist/RowPrefix/TilePrefix/Scatter)
     ops.def(
