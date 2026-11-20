@@ -52,7 +52,7 @@ __aicore__ inline void PivotMeanRows(__gm__ uint8_t *input, __gm__ uint8_t *outp
     GlobalTensor<T> src, dst;
     src.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(input));
     dst.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(output));
-    DataCopy(raw, src[sourceRow * width], count * width);
+    DataCopy(raw, src[static_cast<uint64_t>(sourceRow) * width], count * width);
     SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
     WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
     if constexpr (std::is_same<T, float>::value) {
@@ -80,7 +80,7 @@ __aicore__ inline void PivotMeanRows(__gm__ uint8_t *input, __gm__ uint8_t *outp
     }
     SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
     WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
-    DataCopy(dst[outputRow * width], raw, width);
+    DataCopy(dst[static_cast<uint64_t>(outputRow) * width], raw, width);
     SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
     WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
     // The next input DMA reuses raw: ordering only the vector pipe is not enough.
