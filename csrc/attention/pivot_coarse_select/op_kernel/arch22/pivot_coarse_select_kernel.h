@@ -711,13 +711,11 @@ __aicore__ inline void PivotCoarseSelectKernel<LIT>::ProcessCoarsePairs()
     }
 
     const uint32_t totalPairs = CeilDiv(static_cast<uint32_t>(constInfo.batchSize), 2U);
-    const uint32_t pairsPerCore = totalPairs / usedCoreNum;
-    const uint32_t extraPairs = totalPairs % usedCoreNum;
-    const uint32_t pairBegin = aiCoreIdx * pairsPerCore + Min(aiCoreIdx, extraPairs);
-    const uint32_t pairEnd = pairBegin + pairsPerCore + (aiCoreIdx < extraPairs ? 1 : 0);
     const uint32_t vectorLane = tmpBlockIdx % 2;
     uint32_t loop = 0;
-    for (uint32_t pair = pairBegin; pair < pairEnd; ++pair) {
+    // Neighbouring proxy pairs usually share a request's KV history. Run
+    // them on different cores so their key loads can use the same L2 lines.
+    for (uint32_t pair = aiCoreIdx; pair < totalPairs; pair += usedCoreNum) {
         const uint32_t first = 2 * pair;
         const uint32_t second = first + 1;
         const uint32_t k0 = actualSeqLengthsGm.GetValue(first);
