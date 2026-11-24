@@ -27,6 +27,7 @@ from vllm_ascend.attention.context_parallel.sfa_dcp_utils import (
     get_sfa_dcp_max_local_block_table_cols,
     get_sfa_pcp_global_metadata,
 )
+from vllm_ascend.attention.sfa_kv_prefetch import take_prepared_sfa_kv
 from vllm_ascend.attention.sfa_v1 import (
     AscendSFAImpl,
     AscendSFAMetadata,
@@ -1458,7 +1459,13 @@ class AscendSFADCPImpl(DCPImplMixin, AscendSFAImpl):
             # the DSA token shards first, then remap for this receiver rank's
             # DCP-local KV shard.
             topk_indices = self.dcp_group.all_gather(topk_indices.contiguous(), dim=0)
-        topk_indices = self._remap_sparse_indices(topk_indices)
+        actual_seq_lengths_key = dcp_context.seq_lens
+        block_table = dcp_context.block_table
+        compact = take_prepared_sfa_kv(self, attn_metadata, kv_cache, ql_nope.shape[0])
+        if compact is None:
+            topk_indices = self._remap_sparse_indices(topk_indices)
+        else:
+            kv_cache, topk_indices, actual_seq_lengths_query, actual_seq_lengths_key, block_table = compact
         # Keep the gathered query as a strided view of the head-major gather
         # output. The split query fragments handed to npu_sparse_flash_
         # attention have always been strided views (torch.split never copies),
@@ -1478,8 +1485,8 @@ class AscendSFADCPImpl(DCPImplMixin, AscendSFAImpl):
             topk_indices,
             attn_metadata,
             actual_seq_lengths_query,
-            dcp_context.seq_lens,
-            block_table=dcp_context.block_table,
+            actual_seq_lengths_key,
+            block_table=block_table,
             # The replicated-view indexer already applies the causal visibility rule.
             # After DCP remaps topk indices to local KV positions, local KV
             # length no longer shares the same coordinate system as global

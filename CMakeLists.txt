@@ -59,6 +59,11 @@ set(VLLM_ASCEND_CUSTOM_OP
     ${CMAKE_CURRENT_SOURCE_DIR}/csrc/mla_preprocess/op_kernel/mla_preprocess_kernel.cpp
 )
 
+# The compact BF16 SFA pool uses the Ascend 910B vector gather.
+if(NOT SOC_VERSION MATCHES "ascend910b")
+    list(REMOVE_ITEM VLLM_ASCEND_CUSTOM_OP ${CMAKE_CURRENT_SOURCE_DIR}/csrc/kernels/sfa_kv_pool_gather.cpp)
+endif()
+
 set(VLLM_ASCEND_CUSTOM_OP_EXCLUDE_ASCEND950
     ${CMAKE_CURRENT_SOURCE_DIR}/csrc/mla_preprocess/op_kernel/mla_preprocess_kernel.cpp
 )
@@ -111,6 +116,9 @@ set(
 )
 
 pybind11_add_module(vllm_ascend_C ${VLLM_ASCEND_SRC})
+if(SOC_VERSION MATCHES "ascend910b")
+  target_compile_definitions(vllm_ascend_C PRIVATE VLLM_ASCEND_ENABLE_SFA_KV_PREFETCH)
+endif()
 if(SOC_VERSION MATCHES "ascend910_93.*")
   target_compile_definitions(vllm_ascend_C PRIVATE VLLM_ASCEND_ENABLE_SPARSE_KV_OFFLOAD)
   target_link_libraries(vllm_ascend_C PRIVATE OpenMP::OpenMP_CXX)
