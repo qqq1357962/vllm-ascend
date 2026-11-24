@@ -23,6 +23,7 @@ from vllm.v1.worker.utils import select_common_block_size
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.attention.attention_mask import AttentionMaskBuilder
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
+from vllm_ascend.attention.sfa_kv_prefetch import prepare_next_sfa_kv, take_prepared_sfa_kv
 from vllm_ascend.attention.sparse_flash_mla import sparse_flash_mla, sparse_flash_mla_metadata
 from vllm_ascend.attention.utils import (
     MLAPO_MAX_SUPPORTED_TOKENS,
@@ -1521,6 +1522,9 @@ class AscendSFAImpl(MLAAttentionImpl):
     ):
         if self.qk_rope_head_dim == 0:
             return sparse_mla(ql_nope, kv_cache[0], topk_indices, attn_metadata, self.scale)
+        compact = take_prepared_sfa_kv(self, attn_metadata, kv_cache, ql_nope.shape[0])
+        if compact is not None:
+            kv_cache, topk_indices, actual_seq_lengths_query, actual_seq_lengths_key, block_table = compact
         return DeviceOperator.execute_sparse_flash_attention_process(
             self,
             ql_nope,
@@ -1531,6 +1535,7 @@ class AscendSFAImpl(MLAAttentionImpl):
             actual_seq_lengths_query,
             actual_seq_lengths_key,
             block_table=block_table,
+            sparse_mode=0 if compact is not None else 3,
         )
 
     def _record_query_gather_context(
@@ -1948,6 +1953,7 @@ class AscendSFAImpl(MLAAttentionImpl):
             parallel_context.gather_full_o_proj,
         )
 
+        prepare_next_sfa_kv(self)
         maybe_save_kv_layer_to_connector(layer_name, list(kv_cache))
 
         return output

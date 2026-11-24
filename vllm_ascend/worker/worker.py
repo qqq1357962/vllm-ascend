@@ -855,6 +855,13 @@ class NPUWorker(WorkerBase):
             )
 
     def compile_or_warm_up_model(self) -> CompilationTimes:
+        if envs_ascend.VLLM_ASCEND_ENABLE_SFA_KV_PREFETCH:
+            if KVPPConfig.from_vllm_config(self.vllm_config).size > 1:
+                raise ValueError("SFA KV prefetch requires KV layer parallelism to be disabled.")
+            from vllm_ascend.attention.sfa_kv_prefetch import initialize_sfa_kv_prefetch
+
+            initialize_sfa_kv_prefetch(self.vllm_config.compilation_config.static_forward_context, self.vllm_config)
+
         # Note: need to adapt for graph mode.
         warmup_sizes = (self.vllm_config.compilation_config.compile_sizes or []).copy()
         if not self.model_config.enforce_eager:

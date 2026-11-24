@@ -1018,27 +1018,77 @@ __aicore__ inline void SFAVectorService<SFAT>::MergeKv(const RunInfo &runInfo)
     if (s2GmLimit > s2ProcessSize) {
         s2GmLimit = s2ProcessSize;
     }
-    for (int64_t s2GmOffsetArray = s2GmStartOffset; s2GmOffsetArray < s2GmLimit; s2GmOffsetArray += 2 * constInfo.sparseBlockSize) {
-        if (needWaitMte3ToMte2) {
+    // A compact table adds one tag after its 16 pages and supplies consecutive slot indices.
+    constexpr int64_t compactSlots = 2048;
+    constexpr int32_t compactTag = -77701313;
+    constexpr int64_t mergeRows = 32; // Rows in each existing ping/pong merge tile.
+    bool compactInput = false;
+    if constexpr (PAGE_ATTENTION && LAYOUT_T == SFA_LAYOUT::TND) {
+        const int64_t compactPages = compactSlots / 128; // The compact pool uses 128-token pages.
+        compactInput = constInfo.kvCacheBlockSize == 128 && constInfo.sparseBlockSize == 1 &&
+            constInfo.kvHeadNum == 1 && constInfo.headDim == 512 && constInfo.headDimRope == 64 &&
+            constInfo.maxBlockNumPerBatch == compactPages + 1 && runInfo.curActualSeqLenOri <= compactSlots &&
+            blkTableGm_.GetValue(runInfo.bIdx * (compactPages + 1) + compactPages) == compactTag;
+    }
+    if (compactInput) {
+        for (int64_t pos = s2GmStartOffset; pos < s2GmLimit;) {
+            int64_t first = -1;
+            GetRealS2Idx(pos, first, topkGmBaseOffset, runInfo);
+            if (first < 0) {
+                break;
+            }
+            const int64_t rows = Min(Min(mergeRows, s2GmLimit - pos),
+                                     static_cast<int64_t>(runInfo.curActualSeqLenOri) - first);
+            if (rows <= 0) {
+                break;
+            }
             WaitFlag<AscendC::HardEvent::MTE3_MTE2>(mergeMte3Idx % 2);
-            needWaitMte3ToMte2 = false;
-        }
-        GetRealS2Idx(s2GmOffsetArray, s2IdxArray0, topkGmBaseOffset, runInfo);
-        if (unlikely(s2IdxArray0 < 0)) {
-            CopyOutMrgeResult(mte2Size, mte3Size, s2GmStartOffset, mergeMte3Idx, runInfo);
-            SetFlag<AscendC::HardEvent::MTE3_MTE2>(mergeMte3Idx % 2);
-            mergeMte3Idx++;
-            break;
-        }
-        GetRealS2Idx(s2GmOffsetArray + constInfo.sparseBlockSize, s2IdxArray1, topkGmBaseOffset, runInfo);
-        CopyInKv(mte2Size, mte3Size, mergeMte3Idx, s2IdxArray0, s2IdxArray1, runInfo);
-        if ((mte2Size - mte3Size + 2 * constInfo.sparseBlockSize > 32) ||
-            s2GmOffsetArray + 2 * constInfo.sparseBlockSize >= s2GmLimit) {
+            for (int64_t copied = 0; copied < rows;) {
+                const int64_t token = first + copied;
+                const int64_t pageRows = Min(rows - copied,
+                    static_cast<int64_t>(constInfo.kvCacheBlockSize) - token % constInfo.kvCacheBlockSize);
+                const int64_t physical = GetKeyGmOffset(token, runInfo, runInfo.curActualSeqLenOri);
+                DataCopyExtParams params = {1, static_cast<uint32_t>(pageRows * constInfo.headDim * sizeof(KV_T)),
+                                            0, 0, 0};
+                DataCopyPadExtParams<KV_T> pad = {false, 0, 0, 0};
+                const int64_t ubRow = (mergeMte3Idx % 2) * mergeRows + copied;
+                DataCopyPad(kvMergUb_[ubRow * constInfo.headDim],
+                            keyGm_[physical * constInfo.headDim], params, pad);
+                params.blockLen = pageRows * constInfo.headDimRope * sizeof(KV_T);
+                DataCopyPad(ropeMergUb_[ubRow * constInfo.headDimRope],
+                            keyRopeGm_[physical * constInfo.headDimRope], params, pad);
+                copied += pageRows;
+            }
+            mte2Size += rows;
             CopyOutMrgeResult(mte2Size, mte3Size, s2GmStartOffset, mergeMte3Idx, runInfo);
             mte3Size = mte2Size;
             SetFlag<AscendC::HardEvent::MTE3_MTE2>(mergeMte3Idx % 2);
             mergeMte3Idx++;
-            needWaitMte3ToMte2 = true;
+            pos += rows;
+        }
+    } else {
+        for (int64_t s2GmOffsetArray = s2GmStartOffset; s2GmOffsetArray < s2GmLimit; s2GmOffsetArray += 2 * constInfo.sparseBlockSize) {
+            if (needWaitMte3ToMte2) {
+                WaitFlag<AscendC::HardEvent::MTE3_MTE2>(mergeMte3Idx % 2);
+                needWaitMte3ToMte2 = false;
+            }
+            GetRealS2Idx(s2GmOffsetArray, s2IdxArray0, topkGmBaseOffset, runInfo);
+            if (unlikely(s2IdxArray0 < 0)) {
+                CopyOutMrgeResult(mte2Size, mte3Size, s2GmStartOffset, mergeMte3Idx, runInfo);
+                SetFlag<AscendC::HardEvent::MTE3_MTE2>(mergeMte3Idx % 2);
+                mergeMte3Idx++;
+                break;
+            }
+            GetRealS2Idx(s2GmOffsetArray + constInfo.sparseBlockSize, s2IdxArray1, topkGmBaseOffset, runInfo);
+            CopyInKv(mte2Size, mte3Size, mergeMte3Idx, s2IdxArray0, s2IdxArray1, runInfo);
+            if ((mte2Size - mte3Size + 2 * constInfo.sparseBlockSize > 32) ||
+                s2GmOffsetArray + 2 * constInfo.sparseBlockSize >= s2GmLimit) {
+                CopyOutMrgeResult(mte2Size, mte3Size, s2GmStartOffset, mergeMte3Idx, runInfo);
+                mte3Size = mte2Size;
+                SetFlag<AscendC::HardEvent::MTE3_MTE2>(mergeMte3Idx % 2);
+                mergeMte3Idx++;
+                needWaitMte3ToMte2 = true;
+            }
         }
     }
 
